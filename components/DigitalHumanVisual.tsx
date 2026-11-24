@@ -27,6 +27,7 @@ import Svg, {
   Stop,
 } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
+import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors, Typography, Spacing } from '../constants/theme';
 import { MetricBaseline, HealthMetricRecord } from '../types';
@@ -104,6 +105,7 @@ export const DigitalHumanVisual: React.FC<Props> = ({
   size = 'full',
   onZoneSelect,
 }) => {
+  const router = useRouter();
   const isFull = size === 'full';
   const screenWidth = Dimensions.get('window').width;
   const containerWidth = isFull ? screenWidth - 32 : screenWidth - 64;
@@ -849,6 +851,14 @@ export const DigitalHumanVisual: React.FC<Props> = ({
                   Ensure post-exertion amino acid intake and perform 2 sets of doorway pectoral stretches.
                 </Text>
               </View>
+
+              <TouchableOpacity
+                onPress={() => router.push('/(tabs)/workout' as any)}
+                style={styles.openWorkoutBtn}
+              >
+                <Ionicons name="barbell" size={15} color={Colors.background} style={{ marginRight: 6 }} />
+                <Text style={styles.openWorkoutBtnText}>Open Workout Intelligence Hub</Text>
+              </TouchableOpacity>
             </View>
           )}
 
@@ -1182,6 +1192,20 @@ const styles = StyleSheet.create({
     color: Colors.secondaryText,
     marginLeft: 6,
     fontStyle: 'italic',
+  },
+  openWorkoutBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: Colors.primaryAccent,
+    borderRadius: Spacing.borderRadius.md,
+    paddingVertical: 10,
+    marginTop: 10,
+  },
+  openWorkoutBtnText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: Colors.background,
   },
 });
 

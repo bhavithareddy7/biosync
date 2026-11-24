@@ -82,3 +82,6 @@ export interface ChatMessage {
   }[];
   suggestedPrompts?: string[];
 }
+
+export * from './workout';
+

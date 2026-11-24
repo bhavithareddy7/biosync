@@ -48,7 +48,21 @@ export default function TabLayout() {
         }}
       />
 
-      {/* Tab 3: Insights */}
+      {/* Tab 3: Workout Intelligence */}
+      <Tabs.Screen
+        name="workout"
+        options={{
+          title: 'Workout',
+          tabBarIcon: ({ color, focused }) => (
+            <View style={styles.iconContainer}>
+              {focused && <View style={styles.activeGlow} />}
+              <Ionicons name={focused ? 'barbell' : 'barbell-outline'} size={20} color={color} />
+            </View>
+          ),
+        }}
+      />
+
+      {/* Tab 4: Insights */}
       <Tabs.Screen
         name="insights"
         options={{

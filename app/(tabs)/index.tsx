@@ -150,6 +150,30 @@ export default function HomeDashboardScreen() {
           </View>
         </View>
 
+        {/* WORKOUT & GYM INTELLIGENCE LAUNCH CARD */}
+        <TouchableOpacity
+          onPress={() => router.push('/(tabs)/workout' as any)}
+          style={styles.workoutBannerCard}
+        >
+          <View style={styles.workoutBannerLeft}>
+            <View style={styles.workoutIconCircle}>
+              <Ionicons name="barbell" size={20} color={Colors.primaryAccent} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <View style={styles.workoutBannerTitleRow}>
+                <Text style={styles.workoutBannerTitle}>Workout & Gym Intelligence</Text>
+                <View style={styles.workoutNewBadge}>
+                  <Text style={styles.workoutNewBadgeText}>NEW</Text>
+                </View>
+              </View>
+              <Text style={styles.workoutBannerSub}>
+                Granular Filtering · Upper Back & Core Focus · Built-in Reps & Weight Logging
+              </Text>
+            </View>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={Colors.primaryAccent} />
+        </TouchableOpacity>
+
         {/* SECTION B: KEY HEALTH METRICS */}
         <View style={styles.sectionHeaderRow}>
           <Text style={styles.sectionTitle}>Key Biometric Dimensions</Text>
@@ -491,5 +515,58 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: Colors.primaryText,
     textAlign: 'center',
+  },
+  workoutBannerCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: Colors.secondaryBackground,
+    borderRadius: Spacing.borderRadius.lg,
+    borderWidth: 1,
+    borderColor: 'rgba(53, 214, 242, 0.35)',
+    padding: 14,
+    marginBottom: 20,
+  },
+  workoutBannerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flex: 1,
+    marginRight: 8,
+  },
+  workoutIconCircle: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: 'rgba(53, 214, 242, 0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  workoutBannerTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 3,
+  },
+  workoutBannerTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: Colors.primaryText,
+  },
+  workoutNewBadge: {
+    backgroundColor: Colors.primaryAccent,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 4,
+  },
+  workoutNewBadgeText: {
+    fontSize: 8,
+    fontWeight: '900',
+    color: Colors.background,
+  },
+  workoutBannerSub: {
+    fontSize: 11,
+    color: Colors.secondaryText,
+    lineHeight: 15,
   },
 });
