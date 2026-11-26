@@ -48,6 +48,44 @@ export const CATEGORY_COLORS: Record<EventCategory, { bg: string; border: string
 };
 
 /**
+ * Clean baseline non-clashing schedule:
+ * 1. 9-to-5 Job: 09:00 - 17:00 (Work)
+ * 2. Gym Workout: 17:30 - 19:00 (Post-work training)
+ * 3. Dinner & Social: 19:30 - 21:30 (Buffer before sleep)
+ * 4. Sleep Window: 22:30 - 06:30 (8 hours restorative sleep)
+ */
+export const DEFAULT_NORMAL_SCHEDULE: ScheduleEvent[] = [
+  {
+    id: 'evt_norm_work',
+    title: '9-to-5 Job',
+    category: 'work',
+    startTime: '09:00',
+    endTime: '17:00',
+  },
+  {
+    id: 'evt_norm_gym',
+    title: 'Gym Workout',
+    category: 'workout',
+    startTime: '17:30',
+    endTime: '19:00',
+  },
+  {
+    id: 'evt_norm_dinner',
+    title: 'Dinner & Social',
+    category: 'social',
+    startTime: '19:30',
+    endTime: '21:30',
+  },
+  {
+    id: 'evt_norm_sleep',
+    title: 'Sleep Window',
+    category: 'sleep',
+    startTime: '22:30',
+    endTime: '06:30',
+  },
+];
+
+/**
  * Pre-populated default clashing scenario specified by user:
  * 1. 9-to-5 Job: 09:00 - 17:00
  * 2. Gym Workout: 15:00 - 18:00 (overlaps Job 15:00 - 17:00!)

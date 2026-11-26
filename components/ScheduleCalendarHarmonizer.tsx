@@ -21,6 +21,7 @@ import { useHealth } from '../context/HealthContext';
 import {
   ScheduleEvent,
   EventCategory,
+  DEFAULT_NORMAL_SCHEDULE,
   DEFAULT_CLASHING_SCHEDULE,
   CATEGORY_COLORS,
   detectScheduleClashes,
@@ -32,8 +33,8 @@ import {
 export const ScheduleCalendarHarmonizer: React.FC = () => {
   const { currentMetric, baseline } = useHealth();
 
-  // Schedule Events State
-  const [events, setEvents] = useState<ScheduleEvent[]>(DEFAULT_CLASHING_SCHEDULE);
+  // Schedule Events State (starts on clean normal schedule)
+  const [events, setEvents] = useState<ScheduleEvent[]>(DEFAULT_NORMAL_SCHEDULE);
 
   // Form State for manual entry
   const [isFormOpen, setIsFormOpen] = useState(false);
@@ -94,6 +95,17 @@ export const ScheduleCalendarHarmonizer: React.FC = () => {
     }
     setEvents((prev) => prev.filter((e) => e.id !== id));
     setAiResult(null);
+  };
+
+  // Handle Return to Clean Normal Schedule
+  const handleResetNormal = () => {
+    if (Platform.OS !== 'web') {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }
+    setEvents(DEFAULT_NORMAL_SCHEDULE);
+    setAiResult(null);
+    setErrorMessage(null);
+    setIsFormOpen(false);
   };
 
   // Handle Reset to Default Clashing Schedule
@@ -183,7 +195,7 @@ export const ScheduleCalendarHarmonizer: React.FC = () => {
               clashCount > 0 ? styles.statusBadgeTextDanger : styles.statusBadgeTextSuccess,
             ]}
           >
-            {clashCount > 0 ? `${clashCount} CLASHES DETECTED` : 'HARMONIZED'}
+            {clashCount > 0 ? `${clashCount} CLASHES DETECTED` : 'NORMAL / BALANCED'}
           </Text>
         </View>
       </View>
@@ -238,8 +250,14 @@ export const ScheduleCalendarHarmonizer: React.FC = () => {
       {clashCount > 0 && (
         <View style={styles.clashAlertBox}>
           <View style={styles.clashAlertHeader}>
-            <Ionicons name="warning" size={18} color={Colors.warning} />
-            <Text style={styles.clashAlertTitle}>PHYSIOLOGICAL CLASHES DETECTED</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+              <Ionicons name="warning" size={18} color={Colors.warning} />
+              <Text style={styles.clashAlertTitle}>PHYSIOLOGICAL CLASHES DETECTED</Text>
+            </View>
+            <TouchableOpacity onPress={handleResetNormal} style={styles.clashBannerNormalBtn}>
+              <Ionicons name="shield-checkmark" size={12} color={Colors.success} style={{ marginRight: 4 }} />
+              <Text style={styles.clashBannerNormalBtnText}>Normal</Text>
+            </TouchableOpacity>
           </View>
           <Text style={styles.clashAlertText}>
             Your schedule contains {clashCount} critical overlap{clashCount > 1 ? 's' : ''} that directly violate your recovery window and work commitments.
@@ -257,8 +275,12 @@ export const ScheduleCalendarHarmonizer: React.FC = () => {
       <View style={styles.eventsHeaderRow}>
         <Text style={styles.eventsTitle}>TODAY'S SCHEDULED EVENTS ({events.length})</Text>
         <View style={styles.eventsActionButtons}>
+          <TouchableOpacity onPress={handleResetNormal} style={styles.normalButton}>
+            <Ionicons name="shield-checkmark" size={13} color={Colors.success} style={{ marginRight: 4 }} />
+            <Text style={styles.normalButtonText}>Normal</Text>
+          </TouchableOpacity>
           <TouchableOpacity onPress={handleResetDefault} style={styles.resetButton}>
-            <Ionicons name="refresh" size={13} color={Colors.secondaryText} style={{ marginRight: 4 }} />
+            <Ionicons name="flame" size={13} color={Colors.warning} style={{ marginRight: 4 }} />
             <Text style={styles.resetButtonText}>Demo Clashes</Text>
           </TouchableOpacity>
           <TouchableOpacity
@@ -465,14 +487,24 @@ export const ScheduleCalendarHarmonizer: React.FC = () => {
             </View>
           )}
 
-          {/* One-Click Apply Button */}
-          <TouchableOpacity
-            onPress={handleApplyAiSchedule}
-            style={styles.applyBtn}
-          >
-            <Ionicons name="flash" size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
-            <Text style={styles.applyBtnText}>Apply AI Harmonized Schedule (Clear All Clashes)</Text>
-          </TouchableOpacity>
+          {/* Action Row: Apply AI Schedule or Back to Normal */}
+          <View style={styles.aiActionRow}>
+            <TouchableOpacity
+              onPress={handleApplyAiSchedule}
+              style={styles.applyBtn}
+            >
+              <Ionicons name="flash" size={15} color="#FFFFFF" style={{ marginRight: 6 }} />
+              <Text style={styles.applyBtnText}>Apply AI Harmonized Schedule</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={handleResetNormal}
+              style={styles.backToNormalBtn}
+            >
+              <Ionicons name="shield-checkmark" size={14} color={Colors.success} style={{ marginRight: 5 }} />
+              <Text style={styles.backToNormalBtnText}>Back to Normal</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       )}
     </View>
@@ -655,6 +687,37 @@ const styles = StyleSheet.create({
   eventsActionButtons: {
     flexDirection: 'row',
     alignItems: 'center',
+  },
+  normalButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    backgroundColor: 'rgba(55, 214, 160, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(55, 214, 160, 0.35)',
+    marginRight: 6,
+  },
+  normalButtonText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: Colors.success,
+  },
+  clashBannerNormalBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    backgroundColor: 'rgba(55, 214, 160, 0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(55, 214, 160, 0.4)',
+  },
+  clashBannerNormalBtnText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: Colors.success,
   },
   resetButton: {
     flexDirection: 'row',
@@ -954,7 +1017,13 @@ const styles = StyleSheet.create({
     flex: 1,
     lineHeight: 15,
   },
+  aiActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   applyBtn: {
+    flex: 1,
     backgroundColor: Colors.secondaryAccent,
     borderRadius: 10,
     paddingVertical: 11,
@@ -964,6 +1033,22 @@ const styles = StyleSheet.create({
   },
   applyBtnText: {
     color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  backToNormalBtn: {
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(55, 214, 160, 0.4)',
+    borderRadius: 10,
+    paddingVertical: 11,
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  backToNormalBtnText: {
+    color: Colors.success,
     fontSize: 13,
     fontWeight: '700',
   },
