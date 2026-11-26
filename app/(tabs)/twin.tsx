@@ -19,7 +19,6 @@ import { useHealth } from '../../context/HealthContext';
 import { DigitalTwinVisualizer } from '../../components/DigitalTwinVisualizer';
 import { TrendChart } from '../../components/TrendChart';
 import { SmartwatchConnectionBadge } from '../../components/SmartwatchConnectionBadge';
-import { SmartwatchModal } from '../../components/SmartwatchModal';
 
 export default function MyTwinScreen() {
   const {
@@ -247,9 +246,6 @@ export default function MyTwinScreen() {
           </View>
         </View>
       </ScrollView>
-
-      {/* Interactive Apple Watch Series 8 Details Panel */}
-      <SmartwatchModal />
     </SafeAreaView>
   );
 }

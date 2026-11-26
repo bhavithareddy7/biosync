@@ -9,6 +9,7 @@ import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { HealthProvider } from '../context/HealthContext';
 import { SmartwatchProvider } from '../context/SmartwatchContext';
+import { SmartwatchModal } from '../components/SmartwatchModal';
 import { Colors } from '../constants/theme';
 
 export default function RootLayout() {
@@ -28,6 +29,8 @@ export default function RootLayout() {
             <Stack.Screen name="onboarding" />
             <Stack.Screen name="(tabs)" />
           </Stack>
+          {/* Global Apple Watch Series 8 Details Modal */}
+          <SmartwatchModal />
         </SmartwatchProvider>
       </HealthProvider>
     </SafeAreaProvider>
