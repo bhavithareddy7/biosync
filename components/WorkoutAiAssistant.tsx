@@ -1,9 +1,10 @@
 // ==============================================================================
-// BioSync Built-in Workout AI Coach Component
-// Grounded in personal biometric baseline, form cues, and apartment substitutions
+// BioSync Built-in AI Gym Coach Component
+// Powered by Google Gemini 2.5 Flash (@google/genai) with Structured Outputs,
+// Live Biometric Context ("My Twin"), Loading Skeleton & Biomechanics Fallback
 // ==============================================================================
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -12,12 +13,17 @@ import {
   TextInput,
   ScrollView,
   Platform,
+  Animated,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { Colors } from '../constants/theme';
 import { AI_WORKOUT_PROMPTS } from '../constants/exerciseDatabase';
-import { WorkoutAiService, WorkoutAiResponse } from '../services/workoutAiService';
+import {
+  WorkoutAiService,
+  CoachResponseSchema,
+  CoachUserContext,
+} from '../services/workoutAiService';
 import { useHealth } from '../context/HealthContext';
 import { Exercise } from '../types/workout';
 import { WorkoutService } from '../services/workoutService';
@@ -28,84 +34,213 @@ interface WorkoutAiAssistantProps {
 
 export const WorkoutAiAssistant: React.FC<WorkoutAiAssistantProps> = ({ onSelectExercise }) => {
   const { currentMetric, baseline } = useHealth();
+
+  const [recentLogs, setRecentLogs] = useState<CoachUserContext['myData']['recentLogs']>([]);
+
+  useEffect(() => {
+    WorkoutService.getWorkoutSessions()
+      .then((sessions) => {
+        const formatted = sessions.slice(0, 3).map((s) => ({
+          routine: s.routineName,
+          date: s.date,
+          totalVolumeKg: s.totalVolumeKg,
+          exercises: s.exercises.map((e) => e.exerciseName),
+        }));
+        setRecentLogs(formatted);
+      })
+      .catch(() => {});
+  }, []);
+
+  // Biometric Context Injection ("My Twin" & "My Data")
+  const userContext = useMemo<CoachUserContext>(() => {
+    const rhr = currentMetric?.resting_heart_rate ?? 76;
+    const rhrBase = baseline?.avgHeartRate ?? 70;
+    const sleep = currentMetric?.sleep_hours ?? 5.5;
+    const sleepBase = baseline?.avgSleep ?? 7.5;
+
+    // Calculate dynamic recovery score from RHR delta and sleep debt
+    const hrPenalty = Math.max(0, (rhr - rhrBase) * 3.5);
+    const sleepPenalty = Math.max(0, (sleepBase - sleep) * 12);
+    const recoveryScore = Math.max(25, Math.min(100, Math.round(100 - hrPenalty - sleepPenalty)));
+
+    return {
+      myTwin: {
+        restingHeartRate: rhr,
+        restingHeartRateBaseline: Math.round(rhrBase),
+        sleepHours: sleep,
+        sleepHoursBaseline: Number(sleepBase.toFixed(1)),
+        fitnessLevel: 'Intermediate (Strength & Hypertrophy)',
+        injuryHistory: 'Mild lower lumbar strain history; avoid unbraced axial spinal compression',
+      },
+      myData: {
+        activeSplit: 'Upper Body & Core Focus',
+        recoveryPercentage: recoveryScore,
+        recentLogs,
+      },
+    };
+  }, [currentMetric, baseline, recentLogs]);
+
   const [query, setQuery] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [activeResponse, setActiveResponse] = useState<WorkoutAiResponse | null>(() => {
-    // Initial grounded greeting based on current baseline
-    return WorkoutAiService.getAiFeedback(
+  const [activeResponse, setActiveResponse] = useState<CoachResponseSchema>(() =>
+    WorkoutAiService.getDeterministicFallback(
       'My resting HR is 76 BPM and sleep was 5.5h. Should I lift heavy today?',
-      currentMetric || undefined,
-      baseline
-    );
-  });
+      userContext
+    )
+  );
+  const [responseSource, setResponseSource] = useState<'gemini-live' | 'biomechanics-engine'>('biomechanics-engine');
+  const [errorNotice, setErrorNotice] = useState<string | null>(null);
+  const [hasServerKey, setHasServerKey] = useState<boolean | null>(null);
 
-  const handlePromptPress = (question: string) => {
+  // Skeleton pulse animation
+  const pulseAnim = useRef(new Animated.Value(0.3)).current;
+
+  useEffect(() => {
+    // Check if server is reachable and Gemini key is configured
+    WorkoutAiService.checkApiStatus().then((status) => {
+      setHasServerKey(status.hasKey);
+    });
+  }, []);
+
+  useEffect(() => {
+    let animation: Animated.CompositeAnimation;
+    if (isLoading) {
+      animation = Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, {
+            toValue: 0.85,
+            duration: 650,
+            useNativeDriver: true,
+          }),
+          Animated.timing(pulseAnim, {
+            toValue: 0.3,
+            duration: 650,
+            useNativeDriver: true,
+          }),
+        ])
+      );
+      animation.start();
+    } else {
+      pulseAnim.setValue(0.3);
+    }
+    return () => animation?.stop();
+  }, [isLoading, pulseAnim]);
+
+  const executeCoachingQuery = async (questionText: string) => {
+    if (!questionText.trim()) return;
+
     if (Platform.OS !== 'web') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
-    setQuery(question);
+
     setIsLoading(true);
-    setTimeout(() => {
-      const response = WorkoutAiService.getAiFeedback(question, currentMetric || undefined, baseline);
-      setActiveResponse(response);
-      setIsLoading(false);
-    }, 300);
+    setErrorNotice(null);
+
+    const result = await WorkoutAiService.fetchCoachingAdvice(questionText, userContext);
+    setActiveResponse(result.response);
+    setResponseSource(result.source);
+    if (result.error) {
+      setErrorNotice(result.error);
+    }
+    setIsLoading(false);
+  };
+
+  const handlePromptPress = (question: string) => {
+    setQuery(question);
+    executeCoachingQuery(question);
   };
 
   const handleAsk = () => {
-    if (!query.trim()) return;
-    if (Platform.OS !== 'web') {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    }
-    setIsLoading(true);
-    setTimeout(() => {
-      const response = WorkoutAiService.getAiFeedback(query, currentMetric || undefined, baseline);
-      setActiveResponse(response);
-      setIsLoading(false);
-    }, 400);
+    if (!query.trim() || isLoading) return;
+    executeCoachingQuery(query);
   };
 
   const suggestedEx = activeResponse?.suggestedExerciseId
     ? WorkoutService.getExerciseById(activeResponse.suggestedExerciseId)
     : undefined;
 
+  // Badge color helper based on cardTitle
+  const getBadgeStyle = (title: string) => {
+    const t = (title || '').toUpperCase();
+    if (t.includes('FORM')) {
+      return { bg: 'rgba(53, 214, 242, 0.15)', text: Colors.primaryAccent };
+    }
+    if (t.includes('RECOVERY') || t.includes('READINESS')) {
+      return { bg: 'rgba(255, 184, 92, 0.15)', text: Colors.warning };
+    }
+    if (t.includes('SUBSTITUTION') || t.includes('ALTERNATIVE')) {
+      return { bg: 'rgba(55, 214, 160, 0.15)', text: Colors.success };
+    }
+    return { bg: 'rgba(139, 114, 255, 0.15)', text: Colors.secondaryAccent };
+  };
+
+  const badgeTheme = getBadgeStyle(activeResponse?.cardTitle || '');
+
   return (
     <View style={styles.card}>
-      {/* Header with AI Badge & Baseline Grounding Note */}
+      {/* Header with AI Badge & Telemetry Grounding */}
       <View style={styles.header}>
         <View style={styles.headerLeft}>
           <View style={styles.aiIconBubble}>
-            <Ionicons name="sparkles" size={16} color={Colors.secondaryAccent} />
+            <Ionicons name="sparkles" size={16} color={Colors.primaryAccent} />
           </View>
           <View>
-            <Text style={styles.title}>BioSync AI Workout Coach</Text>
-            <Text style={styles.subtitle}>Grounded in your recovery baselines & biomechanics</Text>
+            <Text style={styles.title}>BioSync AI Gym Coach</Text>
+            <Text style={styles.subtitle}>
+              Powered by Gemini 2.5 Flash & Biomechanical Twin
+            </Text>
           </View>
         </View>
 
-        <View style={styles.statusBadge}>
-          <View style={styles.activeDot} />
-          <Text style={styles.statusBadgeText}>ACTIVE</Text>
+        <View
+          style={[
+            styles.statusBadge,
+            responseSource === 'gemini-live' ? styles.statusBadgeLive : styles.statusBadgeEngine,
+          ]}
+        >
+          <View
+            style={[
+              styles.activeDot,
+              responseSource === 'gemini-live' ? styles.activeDotLive : styles.activeDotEngine,
+            ]}
+          />
+          <Text
+            style={[
+              styles.statusBadgeText,
+              responseSource === 'gemini-live' ? styles.statusBadgeTextLive : styles.statusBadgeTextEngine,
+            ]}
+          >
+            {responseSource === 'gemini-live' ? 'GEMINI LIVE' : 'AI READY'}
+          </Text>
         </View>
       </View>
 
-      {/* Baseline Context Pill */}
+      {/* Biometric Context Strip */}
       <View style={styles.biometricPill}>
         <Ionicons name="pulse" size={13} color={Colors.warning} />
         <Text style={styles.biometricPillText}>
-          Telemetry Context: <Text style={styles.biometricPillBold}>76 BPM RHR (+6) · 5.5h Sleep (-1.0h)</Text>
+          Injected Biometrics:{' '}
+          <Text style={styles.biometricPillBold}>
+            {userContext.myTwin.restingHeartRate} BPM RHR (
+            {userContext.myTwin.restingHeartRate - userContext.myTwin.restingHeartRateBaseline >= 0 ? '+' : ''}
+            {userContext.myTwin.restingHeartRate - userContext.myTwin.restingHeartRateBaseline}) ·{' '}
+            {userContext.myTwin.sleepHours}h Sleep (
+            {(userContext.myTwin.sleepHours - userContext.myTwin.sleepHoursBaseline).toFixed(1)}h) ·{' '}
+            Recovery: {userContext.myData.recoveryPercentage}%
+          </Text>
         </Text>
       </View>
 
       {/* Suggested Quick Question Chips */}
       <View style={styles.chipsSection}>
-        <Text style={styles.chipsTitle}>FREQUENT COACH QUESTIONS:</Text>
+        <Text style={styles.chipsTitle}>FREQUENT COACH INQUIRIES:</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipsRow}>
           {AI_WORKOUT_PROMPTS.map((p) => (
             <TouchableOpacity
               key={p.id}
               onPress={() => handlePromptPress(p.question)}
               style={styles.chip}
+              disabled={isLoading}
             >
               <Ionicons name={p.icon as any} size={12} color={Colors.primaryAccent} style={{ marginRight: 5 }} />
               <Text style={styles.chipText}>{p.question}</Text>
@@ -118,13 +253,18 @@ export const WorkoutAiAssistant: React.FC<WorkoutAiAssistantProps> = ({ onSelect
       <View style={styles.inputRow}>
         <TextInput
           style={styles.input}
-          placeholder="Ask form tips, quiet substitutes, progression..."
+          placeholder="Ask form angles, spinal cues, apartment swaps..."
           placeholderTextColor={Colors.secondaryText}
           value={query}
           onChangeText={setQuery}
           onSubmitEditing={handleAsk}
+          editable={!isLoading}
         />
-        <TouchableOpacity onPress={handleAsk} style={styles.sendBtn} disabled={isLoading}>
+        <TouchableOpacity
+          onPress={handleAsk}
+          style={[styles.sendBtn, isLoading && styles.sendBtnDisabled]}
+          disabled={isLoading}
+        >
           <Ionicons
             name={isLoading ? 'hourglass' : 'arrow-forward'}
             size={16}
@@ -133,58 +273,112 @@ export const WorkoutAiAssistant: React.FC<WorkoutAiAssistantProps> = ({ onSelect
         </TouchableOpacity>
       </View>
 
-      {/* AI Response Card */}
-      {activeResponse && (
-        <View style={styles.responseContainer}>
-          <View style={styles.responseCategoryRow}>
-            <View
-              style={[
-                styles.categoryBadge,
-                activeResponse.category === 'baseline' && styles.categoryBadgeBaseline,
-                activeResponse.category === 'apartment' && styles.categoryBadgeApartment,
-              ]}
-            >
-              <Text
-                style={[
-                  styles.categoryBadgeText,
-                  activeResponse.category === 'baseline' && { color: Colors.warning },
-                  activeResponse.category === 'apartment' && { color: Colors.secondaryAccent },
-                ]}
-              >
-                {activeResponse.category.toUpperCase()} GUIDANCE
-              </Text>
-            </View>
+      {/* Error / Notice Strip (Graceful Handling) */}
+      {errorNotice && !isLoading && (
+        <View style={styles.noticeStrip}>
+          <Ionicons name="information-circle" size={14} color={Colors.warning} />
+          <Text style={styles.noticeText}>
+            Notice: {errorNotice.includes('GEMINI_API_KEY') ? 'Set GEMINI_API_KEY in .env.local for cloud inference. Using verified biomechanics engine.' : errorNotice}
+          </Text>
+          <TouchableOpacity onPress={() => executeCoachingQuery(query || 'Recovery readiness check')} style={styles.retryBtn}>
+            <Text style={styles.retryBtnText}>Retry</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* Loading Skeleton */}
+      {isLoading ? (
+        <View style={styles.skeletonContainer}>
+          <View style={styles.skeletonHeaderRow}>
+            <Animated.View style={[styles.skeletonBadge, { opacity: pulseAnim }]} />
+            <Animated.View style={[styles.skeletonPill, { opacity: pulseAnim }]} />
+          </View>
+          <Animated.View style={[styles.skeletonLineLarge, { opacity: pulseAnim }]} />
+          <Animated.View style={[styles.skeletonLineMedium, { opacity: pulseAnim }]} />
+          <Animated.View style={[styles.skeletonLineShort, { opacity: pulseAnim }]} />
+
+          <View style={styles.skeletonCuesBox}>
+            <Animated.View style={[styles.skeletonCueHeader, { opacity: pulseAnim }]} />
+            <Animated.View style={[styles.skeletonCueRow, { opacity: pulseAnim }]} />
+            <Animated.View style={[styles.skeletonCueRow, { opacity: pulseAnim }]} />
+            <Animated.View style={[styles.skeletonCueRow, { opacity: pulseAnim }]} />
           </View>
 
-          <Text style={styles.responseText}>{activeResponse.answer}</Text>
-
-          {/* Actionable Cues Checklist */}
-          {activeResponse.recommendedCues.length > 0 && (
-            <View style={styles.cuesList}>
-              <Text style={styles.cuesTitle}>KEY BIOMECHANICAL CUES:</Text>
-              {activeResponse.recommendedCues.map((cue, idx) => (
-                <View key={idx} style={styles.cueItem}>
-                  <Ionicons name="checkmark-circle" size={14} color={Colors.primaryAccent} style={{ marginRight: 6 }} />
-                  <Text style={styles.cueText}>{cue}</Text>
-                </View>
-              ))}
-            </View>
-          )}
-
-          {/* Suggested Exercise Launcher Pill */}
-          {suggestedEx && (
-            <TouchableOpacity
-              onPress={() => onSelectExercise?.(suggestedEx)}
-              style={styles.suggestedExPill}
-            >
-              <View style={{ flex: 1 }}>
-                <Text style={styles.suggestedExLabel}>RECOMMENDED EXERCISE</Text>
-                <Text style={styles.suggestedExName}>{suggestedEx.name}</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color={Colors.primaryAccent} />
-            </TouchableOpacity>
-          )}
+          <View style={styles.skeletonFooter}>
+            <Ionicons name="sparkles" size={12} color={Colors.primaryAccent} />
+            <Text style={styles.skeletonFooterText}>
+              BioSync AI is analyzing biometrics & biomechanics via Gemini 2.5 Flash...
+            </Text>
+          </View>
         </View>
+      ) : (
+        /* Structured Output Card Rendering */
+        activeResponse && (
+          <View style={styles.responseContainer}>
+            {/* Dynamic Card Title Badge */}
+            <View style={styles.responseCategoryRow}>
+              <View style={[styles.categoryBadge, { backgroundColor: badgeTheme.bg }]}>
+                <Text style={[styles.categoryBadgeText, { color: badgeTheme.text }]}>
+                  {activeResponse.cardTitle.toUpperCase()}
+                </Text>
+              </View>
+
+              <View style={styles.sourceTag}>
+                <Ionicons
+                  name={responseSource === 'gemini-live' ? 'sparkles' : 'shield-checkmark'}
+                  size={10}
+                  color={responseSource === 'gemini-live' ? Colors.primaryAccent : Colors.secondaryAccent}
+                />
+                <Text
+                  style={[
+                    styles.sourceTagText,
+                    { color: responseSource === 'gemini-live' ? Colors.primaryAccent : Colors.secondaryAccent },
+                  ]}
+                >
+                  {responseSource === 'gemini-live' ? 'gemini-2.5-flash' : 'biomechanics-engine'}
+                </Text>
+              </View>
+            </View>
+
+            {/* Structured Summary (2-3 crisp sentences) */}
+            <Text style={styles.responseText}>{activeResponse.summary}</Text>
+
+            {/* Dynamic Bullet Cues Section */}
+            {activeResponse.bulletCues && activeResponse.bulletCues.length > 0 && (
+              <View style={styles.cuesList}>
+                <Text style={styles.cuesTitle}>{activeResponse.cuesTitle.toUpperCase()}</Text>
+                {activeResponse.bulletCues.map((cue, idx) => (
+                  <View key={idx} style={styles.cueItem}>
+                    <Ionicons
+                      name="checkmark-circle"
+                      size={14}
+                      color={badgeTheme.text}
+                      style={{ marginRight: 8, marginTop: 2 }}
+                    />
+                    <Text style={styles.cueText}>{cue}</Text>
+                  </View>
+                ))}
+              </View>
+            )}
+
+            {/* Suggested Exercise Launcher Pill */}
+            {suggestedEx && (
+              <TouchableOpacity
+                onPress={() => onSelectExercise?.(suggestedEx)}
+                style={styles.suggestedExPill}
+              >
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.suggestedExLabel}>RECOMMENDED EXERCISE SWAP</Text>
+                  <Text style={styles.suggestedExName}>{suggestedEx.name}</Text>
+                  <Text style={styles.suggestedExSub}>
+                    {suggestedEx.targetMuscle.replace('_', ' ').toUpperCase()} · {suggestedEx.impactLevel}
+                  </Text>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color={Colors.primaryAccent} />
+              </TouchableOpacity>
+            )}
+          </View>
+        )
       )}
     </View>
   );
@@ -195,9 +389,13 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.secondaryBackground,
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: 'rgba(139, 114, 255, 0.3)',
+    borderColor: 'rgba(53, 214, 242, 0.25)',
     padding: 16,
     marginBottom: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
   },
   header: {
     flexDirection: 'row',
@@ -215,9 +413,11 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: 'rgba(139, 114, 255, 0.15)',
+    backgroundColor: 'rgba(53, 214, 242, 0.15)',
     alignItems: 'center',
     justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(53, 214, 242, 0.3)',
   },
   title: {
     fontSize: 15,
@@ -227,25 +427,46 @@ const styles = StyleSheet.create({
   subtitle: {
     fontSize: 11,
     color: Colors.secondaryText,
+    marginTop: 1,
   },
   statusBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(55, 214, 160, 0.15)',
     paddingHorizontal: 8,
-    paddingVertical: 3,
+    paddingVertical: 4,
     borderRadius: 6,
     gap: 5,
+  },
+  statusBadgeLive: {
+    backgroundColor: 'rgba(53, 214, 242, 0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(53, 214, 242, 0.4)',
+  },
+  statusBadgeEngine: {
+    backgroundColor: 'rgba(55, 214, 160, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(55, 214, 160, 0.3)',
   },
   activeDot: {
     width: 6,
     height: 6,
     borderRadius: 3,
+  },
+  activeDotLive: {
+    backgroundColor: Colors.primaryAccent,
+  },
+  activeDotEngine: {
     backgroundColor: Colors.success,
   },
   statusBadgeText: {
     fontSize: 9,
     fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  statusBadgeTextLive: {
+    color: Colors.primaryAccent,
+  },
+  statusBadgeTextEngine: {
     color: Colors.success,
   },
   biometricPill: {
@@ -254,13 +475,16 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255, 184, 92, 0.08)',
     borderRadius: 8,
     paddingHorizontal: 10,
-    paddingVertical: 5,
+    paddingVertical: 6,
     marginBottom: 12,
     gap: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 184, 92, 0.2)',
   },
   biometricPillText: {
     fontSize: 11,
     color: Colors.secondaryText,
+    flex: 1,
   },
   biometricPillBold: {
     color: Colors.warning,
@@ -289,7 +513,7 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     borderWidth: 1,
     borderColor: Colors.border,
-    maxWidth: 240,
+    maxWidth: 260,
   },
   chipText: {
     fontSize: 11,
@@ -305,7 +529,7 @@ const styles = StyleSheet.create({
     borderColor: Colors.border,
     paddingHorizontal: 10,
     height: 42,
-    marginBottom: 14,
+    marginBottom: 12,
   },
   input: {
     flex: 1,
@@ -320,33 +544,150 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  sendBtnDisabled: {
+    opacity: 0.5,
+  },
+  noticeStrip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 184, 92, 0.1)',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    marginBottom: 12,
+    gap: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 184, 92, 0.25)',
+  },
+  noticeText: {
+    fontSize: 10,
+    color: Colors.warning,
+    flex: 1,
+  },
+  retryBtn: {
+    backgroundColor: 'rgba(255, 184, 92, 0.2)',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  retryBtnText: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: Colors.warning,
+  },
+  // Skeleton Loader Styles
+  skeletonContainer: {
+    backgroundColor: Colors.cardBackground,
+    borderRadius: 12,
+    padding: 14,
+    borderLeftWidth: 3,
+    borderLeftColor: Colors.primaryAccent,
+  },
+  skeletonHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  skeletonBadge: {
+    width: 90,
+    height: 16,
+    borderRadius: 4,
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+  },
+  skeletonPill: {
+    width: 80,
+    height: 16,
+    borderRadius: 4,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  skeletonLineLarge: {
+    width: '100%',
+    height: 13,
+    borderRadius: 4,
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    marginBottom: 8,
+  },
+  skeletonLineMedium: {
+    width: '92%',
+    height: 13,
+    borderRadius: 4,
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    marginBottom: 8,
+  },
+  skeletonLineShort: {
+    width: '65%',
+    height: 13,
+    borderRadius: 4,
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    marginBottom: 14,
+  },
+  skeletonCuesBox: {
+    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 10,
+  },
+  skeletonCueHeader: {
+    width: 130,
+    height: 10,
+    borderRadius: 3,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    marginBottom: 10,
+  },
+  skeletonCueRow: {
+    width: '95%',
+    height: 11,
+    borderRadius: 3,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    marginBottom: 7,
+  },
+  skeletonFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 4,
+  },
+  skeletonFooterText: {
+    fontSize: 10,
+    color: Colors.primaryAccent,
+    fontStyle: 'italic',
+  },
+  // Real Card Content Styles
   responseContainer: {
     backgroundColor: Colors.cardBackground,
     borderRadius: 12,
     padding: 14,
     borderLeftWidth: 3,
-    borderLeftColor: Colors.secondaryAccent,
+    borderLeftColor: Colors.primaryAccent,
   },
   responseCategoryRow: {
     flexDirection: 'row',
-    marginBottom: 8,
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
   },
   categoryBadge: {
-    backgroundColor: 'rgba(53, 214, 242, 0.15)',
-    paddingHorizontal: 7,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 4,
+  },
+  categoryBadgeText: {
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  sourceTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+    paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 4,
   },
-  categoryBadgeBaseline: {
-    backgroundColor: 'rgba(255, 184, 92, 0.15)',
-  },
-  categoryBadgeApartment: {
-    backgroundColor: 'rgba(139, 114, 255, 0.15)',
-  },
-  categoryBadgeText: {
+  sourceTagText: {
     fontSize: 9,
-    fontWeight: '800',
-    color: Colors.primaryAccent,
+    fontWeight: '600',
   },
   responseText: {
     fontSize: 13,
@@ -355,26 +696,31 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   cuesList: {
-    backgroundColor: 'rgba(255,255,255,0.03)',
+    backgroundColor: 'rgba(255, 255, 255, 0.03)',
     borderRadius: 8,
     padding: 10,
     marginBottom: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.05)',
   },
   cuesTitle: {
     fontSize: 9,
     fontWeight: '800',
     color: Colors.secondaryText,
-    marginBottom: 6,
+    letterSpacing: 0.5,
+    marginBottom: 8,
   },
   cueItem: {
     flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 4,
+    alignItems: 'flex-start',
+    marginBottom: 6,
   },
   cueText: {
     fontSize: 11,
     color: Colors.primaryText,
     fontWeight: '500',
+    lineHeight: 16,
+    flex: 1,
   },
   suggestedExPill: {
     flexDirection: 'row',
@@ -396,6 +742,11 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
     color: Colors.primaryText,
+    marginTop: 1,
+  },
+  suggestedExSub: {
+    fontSize: 10,
+    color: Colors.secondaryText,
     marginTop: 1,
   },
 });
