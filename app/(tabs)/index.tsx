@@ -22,6 +22,8 @@ import { MetricCard } from '../../components/MetricCard';
 import { ActivityBarChart } from '../../components/ActivityBarChart';
 import { InsightCard } from '../../components/InsightCard';
 import { ScheduleCalendarHarmonizer } from '../../components/ScheduleCalendarHarmonizer';
+import { SmartwatchConnectionBadge } from '../../components/SmartwatchConnectionBadge';
+import { SmartwatchModal } from '../../components/SmartwatchModal';
 
 export default function HomeDashboardScreen() {
   const router = useRouter();
@@ -102,6 +104,8 @@ export default function HomeDashboardScreen() {
           </View>
 
           <View style={styles.headerRight}>
+            <SmartwatchConnectionBadge compact />
+
             <TouchableOpacity
               style={styles.iconButton}
               onPress={() => router.push('/(tabs)/insights')}
@@ -302,6 +306,9 @@ export default function HomeDashboardScreen() {
           </View>
         </View>
       </ScrollView>
+
+      {/* Interactive Apple Watch Series 8 Details Panel */}
+      <SmartwatchModal />
     </SafeAreaView>
   );
 }

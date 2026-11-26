@@ -18,6 +18,8 @@ import { Colors, Typography, Spacing } from '../../constants/theme';
 import { useHealth } from '../../context/HealthContext';
 import { DigitalTwinVisualizer } from '../../components/DigitalTwinVisualizer';
 import { TrendChart } from '../../components/TrendChart';
+import { SmartwatchConnectionBadge } from '../../components/SmartwatchConnectionBadge';
+import { SmartwatchModal } from '../../components/SmartwatchModal';
 
 export default function MyTwinScreen() {
   const {
@@ -45,15 +47,18 @@ export default function MyTwinScreen() {
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         {/* Screen Header */}
         <View style={styles.header}>
-          <View>
+          <View style={{ flex: 1, marginRight: 10 }}>
             <Text style={styles.screenTitle}>My Digital Twin</Text>
             <Text style={styles.screenSubtitle}>
               Continuous personal wellness model for {profile.name || 'Alex'}
             </Text>
           </View>
-          <View style={styles.activePill}>
-            <View style={styles.pulseDot} />
-            <Text style={styles.activePillText}>SYNCED</Text>
+          <View style={styles.headerRightGroup}>
+            <SmartwatchConnectionBadge />
+            <View style={styles.activePill}>
+              <View style={styles.pulseDot} />
+              <Text style={styles.activePillText}>SYNCED</Text>
+            </View>
           </View>
         </View>
 
@@ -242,6 +247,9 @@ export default function MyTwinScreen() {
           </View>
         </View>
       </ScrollView>
+
+      {/* Interactive Apple Watch Series 8 Details Panel */}
+      <SmartwatchModal />
     </SafeAreaView>
   );
 }
@@ -261,6 +269,11 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 8,
+  },
+  headerRightGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   screenTitle: {
     fontSize: Typography.fontSize.mainHeading,
