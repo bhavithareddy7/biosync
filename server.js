@@ -49,6 +49,18 @@ STRICT RULES:
 4. For FORM_GUIDANCE, provide exact joint angles, hand/foot placement, and scapular/spinal alignment—not generic tempo or breathing tips.
 5. For RECOVERY_READINESS, compare the user's stated metrics (e.g., RHR, sleep) against their baseline in the provided user context.`;
 
+function formatGeminiError(err) {
+  if (!err) return 'Unknown Gemini API error';
+  const raw = typeof err.message === 'string' ? err.message : String(err);
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed.error && parsed.error.message) {
+      return parsed.error.message;
+    }
+  } catch {}
+  return raw;
+}
+
 async function handleGeminiCoach(query, userContext) {
   const apiKey = (process.env.GEMINI_API_KEY || '').trim();
   if (!apiKey || apiKey === 'your_gemini_api_key_here') {
@@ -63,11 +75,10 @@ USER CONTEXT ("My Twin" & "My Data"):
 ${JSON.stringify(userContext || {}, null, 2)}
 `;
 
+  // Valid Gemini API models: gemini-2.5-flash with gemini-2.0-flash as backup
   const CANDIDATE_MODELS = [
-    'gemini-3.8-flash',
     'gemini-2.5-flash',
-    'gemini-3.5-flash',
-    'gemini-3.7-flash',
+    'gemini-2.0-flash',
   ];
 
   let lastError = null;
@@ -118,7 +129,8 @@ ${JSON.stringify(userContext || {}, null, 2)}
     }
   }
 
-  throw lastError || new Error('All candidate Gemini models failed to respond');
+  const friendlyMsg = formatGeminiError(lastError);
+  throw new Error(friendlyMsg);
 }
 
 const mimeTypes = {
@@ -173,11 +185,12 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));
       } catch (err) {
-        console.error('[API /api/coach] Error:', err.message);
+        const errorMsg = formatGeminiError(err);
+        console.error('[API /api/coach] Error:', errorMsg);
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ 
-          error: err.message,
-          isConfigError: err.message.includes('GEMINI_API_KEY')
+          error: errorMsg,
+          isConfigError: errorMsg.includes('GEMINI_API_KEY')
         }));
       }
     });

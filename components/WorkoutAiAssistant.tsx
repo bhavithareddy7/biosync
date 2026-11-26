@@ -1,7 +1,7 @@
 // ==============================================================================
 // BioSync Built-in AI Gym Coach Component
-// Powered by Google Gemini 2.5 Flash (@google/genai) with Structured Outputs,
-// Live Biometric Context ("My Twin"), Loading Skeleton & Biomechanics Fallback
+// Powered by Google Gemini 2.5 Flash / 2.0 Flash (@google/genai) with Structured Outputs,
+// Live Biometric Context ("My Twin"), Loading Skeleton & Real API Error Surfacing
 // ==============================================================================
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
@@ -34,7 +34,6 @@ interface WorkoutAiAssistantProps {
 
 export const WorkoutAiAssistant: React.FC<WorkoutAiAssistantProps> = ({ onSelectExercise }) => {
   const { currentMetric, baseline } = useHealth();
-
   const [recentLogs, setRecentLogs] = useState<CoachUserContext['myData']['recentLogs']>([]);
 
   useEffect(() => {
@@ -58,7 +57,6 @@ export const WorkoutAiAssistant: React.FC<WorkoutAiAssistantProps> = ({ onSelect
     const sleep = currentMetric?.sleep_hours ?? 5.5;
     const sleepBase = baseline?.avgSleep ?? 7.5;
 
-    // Calculate dynamic recovery score from RHR delta and sleep debt
     const hrPenalty = Math.max(0, (rhr - rhrBase) * 3.5);
     const sleepPenalty = Math.max(0, (sleepBase - sleep) * 12);
     const recoveryScore = Math.max(25, Math.min(100, Math.round(100 - hrPenalty - sleepPenalty)));
@@ -82,13 +80,7 @@ export const WorkoutAiAssistant: React.FC<WorkoutAiAssistantProps> = ({ onSelect
 
   const [query, setQuery] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [activeResponse, setActiveResponse] = useState<CoachResponseSchema>(() =>
-    WorkoutAiService.getDeterministicFallback(
-      'My resting HR is 76 BPM and sleep was 5.5h. Should I lift heavy today?',
-      userContext
-    )
-  );
-  const [responseSource, setResponseSource] = useState<'gemini-live' | 'biomechanics-engine'>('biomechanics-engine');
+  const [activeResponse, setActiveResponse] = useState<CoachResponseSchema | null>(null);
   const [errorNotice, setErrorNotice] = useState<string | null>(null);
   const [hasServerKey, setHasServerKey] = useState<boolean | null>(null);
 
@@ -96,7 +88,6 @@ export const WorkoutAiAssistant: React.FC<WorkoutAiAssistantProps> = ({ onSelect
   const pulseAnim = useRef(new Animated.Value(0.3)).current;
 
   useEffect(() => {
-    // Check if server is reachable and Gemini key is configured
     WorkoutAiService.checkApiStatus().then((status) => {
       setHasServerKey(status.hasKey);
     });
@@ -135,12 +126,15 @@ export const WorkoutAiAssistant: React.FC<WorkoutAiAssistantProps> = ({ onSelect
 
     setIsLoading(true);
     setErrorNotice(null);
+    setActiveResponse(null);
 
     const result = await WorkoutAiService.fetchCoachingAdvice(questionText, userContext);
-    setActiveResponse(result.response);
-    setResponseSource(result.source);
-    if (result.error) {
-      setErrorNotice(result.error);
+    if (result.response) {
+      setActiveResponse(result.response);
+      setErrorNotice(null);
+    } else {
+      setActiveResponse(null);
+      setErrorNotice(result.error || 'Failed to retrieve response from Gemini API');
     }
     setIsLoading(false);
   };
@@ -159,7 +153,6 @@ export const WorkoutAiAssistant: React.FC<WorkoutAiAssistantProps> = ({ onSelect
     ? WorkoutService.getExerciseById(activeResponse.suggestedExerciseId)
     : undefined;
 
-  // Badge color helper based on cardTitle
   const getBadgeStyle = (title: string) => {
     const t = (title || '').toUpperCase();
     if (t.includes('FORM')) {
@@ -187,7 +180,7 @@ export const WorkoutAiAssistant: React.FC<WorkoutAiAssistantProps> = ({ onSelect
           <View>
             <Text style={styles.title}>BioSync AI Gym Coach</Text>
             <Text style={styles.subtitle}>
-              Powered by Gemini 2.5 Flash & Biomechanical Twin
+              Powered by Google Gemini (gemini-2.5-flash / gemini-2.0-flash)
             </Text>
           </View>
         </View>
@@ -195,22 +188,22 @@ export const WorkoutAiAssistant: React.FC<WorkoutAiAssistantProps> = ({ onSelect
         <View
           style={[
             styles.statusBadge,
-            responseSource === 'gemini-live' ? styles.statusBadgeLive : styles.statusBadgeEngine,
+            hasServerKey ? styles.statusBadgeLive : styles.statusBadgeEngine,
           ]}
         >
           <View
             style={[
               styles.activeDot,
-              responseSource === 'gemini-live' ? styles.activeDotLive : styles.activeDotEngine,
+              hasServerKey ? styles.activeDotLive : styles.activeDotEngine,
             ]}
           />
           <Text
             style={[
               styles.statusBadgeText,
-              responseSource === 'gemini-live' ? styles.statusBadgeTextLive : styles.statusBadgeTextEngine,
+              hasServerKey ? styles.statusBadgeTextLive : styles.statusBadgeTextEngine,
             ]}
           >
-            {responseSource === 'gemini-live' ? 'GEMINI LIVE' : 'AI READY'}
+            {hasServerKey ? 'GEMINI LIVE' : 'API READY'}
           </Text>
         </View>
       </View>
@@ -273,21 +266,8 @@ export const WorkoutAiAssistant: React.FC<WorkoutAiAssistantProps> = ({ onSelect
         </TouchableOpacity>
       </View>
 
-      {/* Error / Notice Strip (Graceful Handling) */}
-      {errorNotice && !isLoading && (
-        <View style={styles.noticeStrip}>
-          <Ionicons name="information-circle" size={14} color={Colors.warning} />
-          <Text style={styles.noticeText}>
-            Notice: {errorNotice.includes('GEMINI_API_KEY') ? 'Set GEMINI_API_KEY in .env.local for cloud inference. Using verified biomechanics engine.' : errorNotice}
-          </Text>
-          <TouchableOpacity onPress={() => executeCoachingQuery(query || 'Recovery readiness check')} style={styles.retryBtn}>
-            <Text style={styles.retryBtnText}>Retry</Text>
-          </TouchableOpacity>
-        </View>
-      )}
-
       {/* Loading Skeleton */}
-      {isLoading ? (
+      {isLoading && (
         <View style={styles.skeletonContainer}>
           <View style={styles.skeletonHeaderRow}>
             <Animated.View style={[styles.skeletonBadge, { opacity: pulseAnim }]} />
@@ -307,78 +287,105 @@ export const WorkoutAiAssistant: React.FC<WorkoutAiAssistantProps> = ({ onSelect
           <View style={styles.skeletonFooter}>
             <Ionicons name="sparkles" size={12} color={Colors.primaryAccent} />
             <Text style={styles.skeletonFooterText}>
-              BioSync AI is analyzing biometrics & biomechanics via Gemini 2.5 Flash...
+              Contacting Google Gemini API with biometrics & biomechanics context...
             </Text>
           </View>
         </View>
-      ) : (
-        /* Structured Output Card Rendering */
-        activeResponse && (
-          <View style={styles.responseContainer}>
-            {/* Dynamic Card Title Badge */}
-            <View style={styles.responseCategoryRow}>
-              <View style={[styles.categoryBadge, { backgroundColor: badgeTheme.bg }]}>
-                <Text style={[styles.categoryBadgeText, { color: badgeTheme.text }]}>
-                  {activeResponse.cardTitle.toUpperCase()}
-                </Text>
-              </View>
+      )}
 
-              <View style={styles.sourceTag}>
-                <Ionicons
-                  name={responseSource === 'gemini-live' ? 'sparkles' : 'shield-checkmark'}
-                  size={10}
-                  color={responseSource === 'gemini-live' ? Colors.primaryAccent : Colors.secondaryAccent}
-                />
-                <Text
-                  style={[
-                    styles.sourceTagText,
-                    { color: responseSource === 'gemini-live' ? Colors.primaryAccent : Colors.secondaryAccent },
-                  ]}
-                >
-                  {responseSource === 'gemini-live' ? 'gemini-2.5-flash' : 'biomechanics-engine'}
-                </Text>
-              </View>
+      {/* Surface Real Gemini API Error in the UI (No fake text) */}
+      {errorNotice && !isLoading && !activeResponse && (
+        <View style={styles.errorCardContainer}>
+          <View style={styles.errorCardHeader}>
+            <Ionicons name="alert-circle" size={18} color={Colors.danger} />
+            <Text style={styles.errorCardTitle}>GEMINI API ERROR</Text>
+          </View>
+          <Text style={styles.errorCardText}>{errorNotice}</Text>
+          <View style={styles.errorCardFooter}>
+            <Text style={styles.errorCardHint}>
+              Exact response from server. Check your Gemini API key in .env.local or Google AI Studio model availability.
+            </Text>
+            <TouchableOpacity
+              onPress={() => executeCoachingQuery(query || 'How do I protect my lower back while doing dumbbell rows?')}
+              style={styles.errorRetryBtn}
+            >
+              <Ionicons name="refresh" size={12} color="#FFFFFF" style={{ marginRight: 4 }} />
+              <Text style={styles.errorRetryBtnText}>Retry API Call</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
+      {/* Initial Guidance Card (Before first query) */}
+      {!activeResponse && !errorNotice && !isLoading && (
+        <View style={styles.welcomeCard}>
+          <View style={styles.welcomeHeader}>
+            <Ionicons name="chatbubbles" size={18} color={Colors.primaryAccent} />
+            <Text style={styles.welcomeTitle}>READY FOR YOUR QUESTIONS</Text>
+          </View>
+          <Text style={styles.welcomeText}>
+            Ask any exercise form question or tap one of the frequent coach prompts above. Your biometric telemetry (Resting HR: {userContext.myTwin.restingHeartRate} BPM, Sleep: {userContext.myTwin.sleepHours}h) is automatically passed to Gemini for personalized advice.
+          </Text>
+        </View>
+      )}
+
+      {/* Live Gemini Response Card Rendering */}
+      {activeResponse && !isLoading && (
+        <View style={styles.responseContainer}>
+          {/* Dynamic Card Title Badge */}
+          <View style={styles.responseCategoryRow}>
+            <View style={[styles.categoryBadge, { backgroundColor: badgeTheme.bg }]}>
+              <Text style={[styles.categoryBadgeText, { color: badgeTheme.text }]}>
+                {activeResponse.cardTitle.toUpperCase()}
+              </Text>
             </View>
 
-            {/* Structured Summary (2-3 crisp sentences) */}
-            <Text style={styles.responseText}>{activeResponse.summary}</Text>
-
-            {/* Dynamic Bullet Cues Section */}
-            {activeResponse.bulletCues && activeResponse.bulletCues.length > 0 && (
-              <View style={styles.cuesList}>
-                <Text style={styles.cuesTitle}>{activeResponse.cuesTitle.toUpperCase()}</Text>
-                {activeResponse.bulletCues.map((cue, idx) => (
-                  <View key={idx} style={styles.cueItem}>
-                    <Ionicons
-                      name="checkmark-circle"
-                      size={14}
-                      color={badgeTheme.text}
-                      style={{ marginRight: 8, marginTop: 2 }}
-                    />
-                    <Text style={styles.cueText}>{cue}</Text>
-                  </View>
-                ))}
-              </View>
-            )}
-
-            {/* Suggested Exercise Launcher Pill */}
-            {suggestedEx && (
-              <TouchableOpacity
-                onPress={() => onSelectExercise?.(suggestedEx)}
-                style={styles.suggestedExPill}
-              >
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.suggestedExLabel}>RECOMMENDED EXERCISE SWAP</Text>
-                  <Text style={styles.suggestedExName}>{suggestedEx.name}</Text>
-                  <Text style={styles.suggestedExSub}>
-                    {suggestedEx.targetMuscle.replace('_', ' ').toUpperCase()} · {suggestedEx.impactLevel}
-                  </Text>
-                </View>
-                <Ionicons name="chevron-forward" size={18} color={Colors.primaryAccent} />
-              </TouchableOpacity>
-            )}
+            <View style={styles.sourceTag}>
+              <Ionicons name="sparkles" size={10} color={Colors.primaryAccent} />
+              <Text style={[styles.sourceTagText, { color: Colors.primaryAccent }]}>
+                gemini-live
+              </Text>
+            </View>
           </View>
-        )
+
+          {/* Structured Summary (2-3 crisp sentences) */}
+          <Text style={styles.responseText}>{activeResponse.summary}</Text>
+
+          {/* Dynamic Bullet Cues Section */}
+          {activeResponse.bulletCues && activeResponse.bulletCues.length > 0 && (
+            <View style={styles.cuesList}>
+              <Text style={styles.cuesTitle}>{activeResponse.cuesTitle.toUpperCase()}</Text>
+              {activeResponse.bulletCues.map((cue, idx) => (
+                <View key={idx} style={styles.cueItem}>
+                  <Ionicons
+                    name="checkmark-circle"
+                    size={14}
+                    color={badgeTheme.text}
+                    style={{ marginRight: 8, marginTop: 2 }}
+                  />
+                  <Text style={styles.cueText}>{cue}</Text>
+                </View>
+              ))}
+            </View>
+          )}
+
+          {/* Suggested Exercise Launcher Pill */}
+          {suggestedEx && (
+            <TouchableOpacity
+              onPress={() => onSelectExercise?.(suggestedEx)}
+              style={styles.suggestedExPill}
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={styles.suggestedExLabel}>RECOMMENDED EXERCISE SWAP</Text>
+                <Text style={styles.suggestedExName}>{suggestedEx.name}</Text>
+                <Text style={styles.suggestedExSub}>
+                  {suggestedEx.targetMuscle.replace('_', ' ').toUpperCase()} · {suggestedEx.impactLevel}
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={Colors.primaryAccent} />
+            </TouchableOpacity>
+          )}
+        </View>
       )}
     </View>
   );
@@ -443,9 +450,9 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(53, 214, 242, 0.4)',
   },
   statusBadgeEngine: {
-    backgroundColor: 'rgba(55, 214, 160, 0.12)',
+    backgroundColor: 'rgba(255, 184, 92, 0.12)',
     borderWidth: 1,
-    borderColor: 'rgba(55, 214, 160, 0.3)',
+    borderColor: 'rgba(255, 184, 92, 0.3)',
   },
   activeDot: {
     width: 6,
@@ -456,7 +463,7 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.primaryAccent,
   },
   activeDotEngine: {
-    backgroundColor: Colors.success,
+    backgroundColor: Colors.warning,
   },
   statusBadgeText: {
     fontSize: 9,
@@ -467,7 +474,7 @@ const styles = StyleSheet.create({
     color: Colors.primaryAccent,
   },
   statusBadgeTextEngine: {
-    color: Colors.success,
+    color: Colors.warning,
   },
   biometricPill: {
     flexDirection: 'row',
@@ -547,33 +554,87 @@ const styles = StyleSheet.create({
   sendBtnDisabled: {
     opacity: 0.5,
   },
-  noticeStrip: {
+  // Real API Error Card (Prominently surfaces error)
+  errorCardContainer: {
+    backgroundColor: 'rgba(255, 100, 124, 0.1)',
+    borderRadius: 12,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 100, 124, 0.4)',
+    borderLeftWidth: 4,
+    borderLeftColor: Colors.danger,
+  },
+  errorCardHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(255, 184, 92, 0.1)',
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    marginBottom: 12,
-    gap: 6,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 184, 92, 0.25)',
+    gap: 8,
+    marginBottom: 8,
   },
-  noticeText: {
+  errorCardTitle: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: Colors.danger,
+    letterSpacing: 0.6,
+  },
+  errorCardText: {
+    fontSize: 12,
+    lineHeight: 18,
+    color: Colors.primaryText,
+    marginBottom: 10,
+  },
+  errorCardFooter: {
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 100, 124, 0.2)',
+    paddingTop: 8,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  errorCardHint: {
     fontSize: 10,
-    color: Colors.warning,
+    color: Colors.secondaryText,
     flex: 1,
+    minWidth: 180,
   },
-  retryBtn: {
-    backgroundColor: 'rgba(255, 184, 92, 0.2)',
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 4,
+  errorRetryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Colors.danger,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 6,
   },
-  retryBtnText: {
-    fontSize: 9,
+  errorRetryBtnText: {
+    fontSize: 11,
     fontWeight: '700',
-    color: Colors.warning,
+    color: '#FFFFFF',
+  },
+  // Welcome Initial Card
+  welcomeCard: {
+    backgroundColor: Colors.cardBackground,
+    borderRadius: 12,
+    padding: 14,
+    borderLeftWidth: 3,
+    borderLeftColor: Colors.primaryAccent,
+  },
+  welcomeHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 8,
+  },
+  welcomeTitle: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: Colors.primaryAccent,
+    letterSpacing: 0.5,
+  },
+  welcomeText: {
+    fontSize: 12,
+    lineHeight: 18,
+    color: Colors.secondaryText,
   },
   // Skeleton Loader Styles
   skeletonContainer: {

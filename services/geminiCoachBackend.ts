@@ -71,7 +71,24 @@ export function getGeminiApiKey(): string | undefined {
 }
 
 /**
- * Generate structured coaching feedback using gemini-2.5-flash and responseSchema
+ * Extracts a human-readable error message from Gemini API errors
+ */
+export function formatGeminiError(err: any): string {
+  if (!err) return 'Unknown Gemini API error';
+  const raw = typeof err.message === 'string' ? err.message : String(err);
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed.error && parsed.error.message) {
+      return parsed.error.message;
+    }
+  } catch {
+    // raw string is not JSON
+  }
+  return raw;
+}
+
+/**
+ * Generate structured coaching feedback using gemini-2.5-flash (with gemini-2.0-flash backup)
  */
 export async function generateCoachResponse(
   query: string,
@@ -94,11 +111,10 @@ USER CONTEXT ("My Twin" & "My Data"):
 ${JSON.stringify(userContext, null, 2)}
 `;
 
+  // Valid Gemini API models: gemini-2.5-flash with gemini-2.0-flash as backup
   const CANDIDATE_MODELS = [
-    'gemini-3.8-flash',
     'gemini-2.5-flash',
-    'gemini-3.5-flash',
-    'gemini-3.7-flash',
+    'gemini-2.0-flash',
   ];
 
   let lastError: any = null;
@@ -150,5 +166,6 @@ ${JSON.stringify(userContext, null, 2)}
     }
   }
 
-  throw lastError || new Error('All candidate Gemini models failed to respond');
+  const friendlyMsg = formatGeminiError(lastError);
+  throw new Error(friendlyMsg);
 }
