@@ -94,45 +94,61 @@ USER CONTEXT ("My Twin" & "My Data"):
 ${JSON.stringify(userContext, null, 2)}
 `;
 
-  const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash',
-    contents: promptContent,
-    config: {
-      systemInstruction: COACH_SYSTEM_INSTRUCTION,
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          cardTitle: {
-            type: Type.STRING,
-            description: 'Card headline such as FORM GUIDANCE, RECOVERY & READINESS, EXERCISE ALTERNATIVES, or PROGRESSION PLAN',
-          },
-          summary: {
-            type: Type.STRING,
-            description: '2 to 3 crisp, tailored sentences answering the exact question directly without generic fillers',
-          },
-          cuesTitle: {
-            type: Type.STRING,
-            description: 'Action header such as KEY BIOMECHANICAL CUES, RECOMMENDED SWAPS, or READINESS ACTION PLAN',
-          },
-          bulletCues: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.STRING,
+  const CANDIDATE_MODELS = [
+    'gemini-3.8-flash',
+    'gemini-2.5-flash',
+    'gemini-3.5-flash',
+    'gemini-3.7-flash',
+  ];
+
+  let lastError: any = null;
+
+  for (const modelName of CANDIDATE_MODELS) {
+    try {
+      const response = await ai.models.generateContent({
+        model: modelName,
+        contents: promptContent,
+        config: {
+          systemInstruction: COACH_SYSTEM_INSTRUCTION,
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              cardTitle: {
+                type: Type.STRING,
+                description: 'Card headline such as FORM GUIDANCE, RECOVERY & READINESS, EXERCISE ALTERNATIVES, or PROGRESSION PLAN',
+              },
+              summary: {
+                type: Type.STRING,
+                description: '2 to 3 crisp, tailored sentences answering the exact question directly without generic fillers',
+              },
+              cuesTitle: {
+                type: Type.STRING,
+                description: 'Action header such as KEY BIOMECHANICAL CUES, RECOMMENDED SWAPS, or READINESS ACTION PLAN',
+              },
+              bulletCues: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.STRING,
+                },
+                description: '3 actionable, specific bullet points with exact joint angles, substitutions, or recovery rules',
+              },
             },
-            description: '3 actionable, specific bullet points with exact joint angles, substitutions, or recovery rules',
+            required: ['cardTitle', 'summary', 'cuesTitle', 'bulletCues'],
           },
         },
-        required: ['cardTitle', 'summary', 'cuesTitle', 'bulletCues'],
-      },
-    },
-  });
+      });
 
-  const responseText = response.text;
-  if (!responseText) {
-    throw new Error('Received empty response from Gemini API');
+      const responseText = response.text;
+      if (responseText) {
+        const parsed: CoachResponseSchema = JSON.parse(responseText);
+        return parsed;
+      }
+    } catch (err: any) {
+      console.warn(`[geminiCoachBackend] Model ${modelName} failed, attempting next:`, err.message);
+      lastError = err;
+    }
   }
 
-  const parsed: CoachResponseSchema = JSON.parse(responseText);
-  return parsed;
+  throw lastError || new Error('All candidate Gemini models failed to respond');
 }
