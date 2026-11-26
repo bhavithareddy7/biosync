@@ -164,8 +164,8 @@ async function generateContentWithRetry(
       if (!retryable || attempt >= maxAttempts) {
         throw err;
       }
-      const baseDelay = Math.pow(2, attempt - 1) * 1000; // 1000ms, 2000ms
-      const jitter = Math.floor(Math.random() * 500); // 0-500ms
+      const baseDelay = Math.pow(2, attempt - 1) * 600; // 600ms, 1200ms
+      const jitter = Math.floor(Math.random() * 300); // 0-300ms
       const delay = baseDelay + jitter;
       console.warn(
         `[geminiCoachBackend] ${model} transient error (attempt ${attempt}/${maxAttempts}). Retrying in ${delay}ms...`

@@ -374,7 +374,7 @@ export const WorkoutAiAssistant: React.FC<WorkoutAiAssistantProps> = ({ onSelect
           <View style={styles.errorCardFooter}>
             <Text style={styles.errorCardHint}>
               {errorNotice.includes('[Request Timeout]')
-                ? 'Gemini reasoning took longer than 45s due to high demand. Tapping retry will immediately start a clean, fresh request.'
+                ? 'Gemini reasoning took longer than expected due to high demand. Tapping retry will immediately start a clean, fresh request.'
                 : 'Exact response from server. Check your Gemini API key in .env.local or Google AI Studio model availability.'}
             </Text>
             <TouchableOpacity

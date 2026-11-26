@@ -119,8 +119,8 @@ async function generateContentWithRetry(ai, model, promptContent, config, maxAtt
       if (!retryable || attempt >= maxAttempts) {
         throw err;
       }
-      const baseDelay = Math.pow(2, attempt - 1) * 1000;
-      const jitter = Math.floor(Math.random() * 500);
+      const baseDelay = Math.pow(2, attempt - 1) * 600;
+      const jitter = Math.floor(Math.random() * 300);
       const delay = baseDelay + jitter;
       console.warn(
         `[server /api/coach] ${model} transient error (attempt ${attempt}/${maxAttempts}). Retrying in ${delay}ms...`
@@ -133,6 +133,9 @@ async function generateContentWithRetry(ai, model, promptContent, config, maxAtt
 }
 
 async function handleGeminiCoach(query, userContext) {
+  const startTime = Date.now();
+  console.log(`[server /api/coach] Incoming request: "${query.substring(0, 60)}"`);
+
   const apiKey = (process.env.GEMINI_API_KEY || '').trim();
   if (!apiKey || apiKey === 'your_gemini_api_key_here') {
     throw new Error('GEMINI_API_KEY is not configured in .env.local or process environment.');
@@ -201,6 +204,7 @@ ${JSON.stringify(userContext || {}, null, 2)}
     throw new Error('Empty response received from Gemini API');
   }
 
+  console.log(`[server /api/coach] Completed successfully in ${Date.now() - startTime}ms`);
   return JSON.parse(responseText);
 }
 

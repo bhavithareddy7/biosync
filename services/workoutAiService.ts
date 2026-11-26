@@ -115,7 +115,7 @@ export class WorkoutAiService {
     }
 
     let isTimedOut = false;
-    const REQUEST_TIMEOUT_MS = 45000; // 45 seconds timeout for LLM reasoning, exponential backoff retries and fallback
+    const REQUEST_TIMEOUT_MS = 90000; // 90 seconds timeout for LLM reasoning, exponential backoff retries and fallback
     const timeoutId = setTimeout(() => {
       isTimedOut = true;
       try {
