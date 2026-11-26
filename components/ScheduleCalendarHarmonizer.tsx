@@ -30,11 +30,29 @@ import {
   ScheduleHarmonizationResult,
 } from '../services/scheduleAiService';
 
+// System baseline event IDs to distinguish from user-added custom events
+const SYSTEM_EVENT_IDS = new Set([
+  'evt_work',
+  'evt_gym',
+  'evt_party',
+  'evt_sleep',
+  'evt_norm_work',
+  'evt_norm_gym',
+  'evt_norm_dinner',
+  'evt_norm_sleep',
+]);
+
 export const ScheduleCalendarHarmonizer: React.FC = () => {
   const { currentMetric, baseline } = useHealth();
 
   // Schedule Events State (starts on clean normal schedule)
   const [events, setEvents] = useState<ScheduleEvent[]>(DEFAULT_NORMAL_SCHEDULE);
+
+  // User Added Custom Events State (preserved across Normal / Clash toggles)
+  const [userAddedEvents, setUserAddedEvents] = useState<ScheduleEvent[]>([]);
+
+  // Clash Alerts Visibility Toggle (false = clean normal view, true = show red clash warnings)
+  const [showClashAlerts, setShowClashAlerts] = useState(false);
 
   // Form State for manual entry
   const [isFormOpen, setIsFormOpen] = useState(false);
@@ -53,6 +71,15 @@ export const ScheduleCalendarHarmonizer: React.FC = () => {
     return detectScheduleClashes(events);
   }, [events]);
 
+  // Sort events chronologically so the schedule flows smoothly from 00:00 to 24:00
+  const sortedFlaggedEvents = useMemo(() => {
+    return [...flaggedEvents].sort((a, b) => {
+      const mA = timeToMinutes(a.startTime);
+      const mB = timeToMinutes(b.startTime);
+      return mA - mB;
+    });
+  }, [flaggedEvents]);
+
   // Biometric Context
   const userContext = useMemo(() => {
     return {
@@ -66,7 +93,7 @@ export const ScheduleCalendarHarmonizer: React.FC = () => {
     };
   }, [currentMetric, baseline]);
 
-  // Handle Add Manual Event
+  // Handle Add Manual Event (added to both events and userAddedEvents)
   const handleAddEvent = () => {
     if (!newTitle.trim()) return;
 
@@ -75,47 +102,67 @@ export const ScheduleCalendarHarmonizer: React.FC = () => {
     }
 
     const newEvt: ScheduleEvent = {
-      id: `evt_${Date.now()}`,
+      id: `evt_user_${Date.now()}`,
       title: newTitle.trim(),
       category: newCategory,
       startTime: newStart.trim() || '12:00',
       endTime: newEnd.trim() || '13:00',
     };
 
+    setUserAddedEvents((prev) => [...prev, newEvt]);
     setEvents((prev) => [...prev, newEvt]);
     setNewTitle('');
     setIsFormOpen(false);
     setAiResult(null);
   };
 
-  // Handle Delete Event
+  // Handle Delete Event (removes from both events and userAddedEvents)
   const handleDeleteEvent = (id: string) => {
     if (Platform.OS !== 'web') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
     setEvents((prev) => prev.filter((e) => e.id !== id));
+    setUserAddedEvents((prev) => prev.filter((e) => e.id !== id));
     setAiResult(null);
   };
 
-  // Handle Return to Clean Normal Schedule
+  // Handle Return to Clean Normal Schedule (PRESERVING all user added events!)
   const handleResetNormal = () => {
     if (Platform.OS !== 'web') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
-    setEvents(DEFAULT_NORMAL_SCHEDULE);
+    // Gather all user added events from current state and userAddedEvents state
+    const currentAdded = events.filter((e) => !SYSTEM_EVENT_IDS.has(e.id));
+    const allAddedMap = new Map<string, ScheduleEvent>();
+    userAddedEvents.forEach((e) => allAddedMap.set(e.id, e));
+    currentAdded.forEach((e) => allAddedMap.set(e.id, e));
+    const allAdded = Array.from(allAddedMap.values());
+
+    // Restore normal baseline PLUS all user added events
+    setEvents([...DEFAULT_NORMAL_SCHEDULE, ...allAdded]);
+    setUserAddedEvents(allAdded);
     setAiResult(null);
     setErrorMessage(null);
     setIsFormOpen(false);
+    setShowClashAlerts(false); // Clean, calm view
   };
 
-  // Handle Reset to Default Clashing Schedule
+  // Handle Reset to Default Clashing Schedule (PRESERVING user added events!)
   const handleResetDefault = () => {
     if (Platform.OS !== 'web') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     }
-    setEvents(DEFAULT_CLASHING_SCHEDULE);
+    const currentAdded = events.filter((e) => !SYSTEM_EVENT_IDS.has(e.id));
+    const allAddedMap = new Map<string, ScheduleEvent>();
+    userAddedEvents.forEach((e) => allAddedMap.set(e.id, e));
+    currentAdded.forEach((e) => allAddedMap.set(e.id, e));
+    const allAdded = Array.from(allAddedMap.values());
+
+    setEvents([...DEFAULT_CLASHING_SCHEDULE, ...allAdded]);
+    setUserAddedEvents(allAdded);
     setAiResult(null);
     setErrorMessage(null);
+    setShowClashAlerts(true); // Activate red clash alerts
   };
 
   // Handle AI Schedule Harmonization Call
@@ -126,6 +173,7 @@ export const ScheduleCalendarHarmonizer: React.FC = () => {
 
     setIsLoading(true);
     setErrorMessage(null);
+    setShowClashAlerts(true); // Show clashes & analysis
 
     const result = await ScheduleAiService.harmonizeSchedule(events, userContext);
     setIsLoading(false);
@@ -147,7 +195,12 @@ export const ScheduleCalendarHarmonizer: React.FC = () => {
     }
 
     setEvents(aiResult.optimizedEvents);
+    const optimizedUserAdded = aiResult.optimizedEvents.filter((e) => !SYSTEM_EVENT_IDS.has(e.id));
+    if (optimizedUserAdded.length > 0) {
+      setUserAddedEvents(optimizedUserAdded);
+    }
     setAiResult(null);
+    setShowClashAlerts(false);
   };
 
   // Calculate duration label
@@ -180,22 +233,22 @@ export const ScheduleCalendarHarmonizer: React.FC = () => {
         <View
           style={[
             styles.statusBadge,
-            clashCount > 0 ? styles.statusBadgeDanger : styles.statusBadgeSuccess,
+            clashCount > 0 && showClashAlerts ? styles.statusBadgeDanger : styles.statusBadgeSuccess,
           ]}
         >
           <View
             style={[
               styles.statusDot,
-              clashCount > 0 ? styles.statusDotDanger : styles.statusDotSuccess,
+              clashCount > 0 && showClashAlerts ? styles.statusDotDanger : styles.statusDotSuccess,
             ]}
           />
           <Text
             style={[
               styles.statusBadgeText,
-              clashCount > 0 ? styles.statusBadgeTextDanger : styles.statusBadgeTextSuccess,
+              clashCount > 0 && showClashAlerts ? styles.statusBadgeTextDanger : styles.statusBadgeTextSuccess,
             ]}
           >
-            {clashCount > 0 ? `${clashCount} CLASHES DETECTED` : 'NORMAL / BALANCED'}
+            {clashCount > 0 && showClashAlerts ? `${clashCount} CLASHES DETECTED` : 'NORMAL / BALANCED'}
           </Text>
         </View>
       </View>
@@ -208,7 +261,7 @@ export const ScheduleCalendarHarmonizer: React.FC = () => {
         </View>
 
         <View style={styles.timelineBar}>
-          {flaggedEvents.map((evt) => {
+          {sortedFlaggedEvents.map((evt) => {
             const startMins = timeToMinutes(evt.startTime);
             let endMins = timeToMinutes(evt.endTime);
             if (endMins <= startMins) endMins = 1440; // cap for visualization
@@ -227,8 +280,8 @@ export const ScheduleCalendarHarmonizer: React.FC = () => {
                     left: `${leftPercent}%`,
                     width: `${widthPercent}%`,
                     backgroundColor: color.border,
-                    borderColor: evt.isClashing ? Colors.danger : 'transparent',
-                    borderWidth: evt.isClashing ? 2 : 0,
+                    borderColor: evt.isClashing && showClashAlerts ? Colors.danger : 'transparent',
+                    borderWidth: evt.isClashing && showClashAlerts ? 2 : 0,
                   },
                 ]}
               />
@@ -246,8 +299,8 @@ export const ScheduleCalendarHarmonizer: React.FC = () => {
         </View>
       </View>
 
-      {/* CLASH WARNING BANNER (When Conflicts Exist) */}
-      {clashCount > 0 && (
+      {/* CLASH WARNING BANNER (When Conflicts Exist AND Alerts are Active) */}
+      {clashCount > 0 && showClashAlerts && (
         <View style={styles.clashAlertBox}>
           <View style={styles.clashAlertHeader}>
             <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
@@ -369,14 +422,15 @@ export const ScheduleCalendarHarmonizer: React.FC = () => {
 
       {/* RENDER EVENT CARDS */}
       <View style={styles.eventsList}>
-        {flaggedEvents.map((evt) => {
+        {sortedFlaggedEvents.map((evt) => {
           const catConfig = CATEGORY_COLORS[evt.category] || CATEGORY_COLORS.other;
+          const isClashingActive = evt.isClashing && showClashAlerts;
           return (
             <View
               key={evt.id}
               style={[
                 styles.eventCard,
-                evt.isClashing && styles.eventCardClashing,
+                isClashingActive && styles.eventCardClashing,
               ]}
             >
               <View style={[styles.eventCatBadge, { backgroundColor: catConfig.bg, borderColor: catConfig.border }]}>
@@ -386,7 +440,7 @@ export const ScheduleCalendarHarmonizer: React.FC = () => {
               <View style={styles.eventInfo}>
                 <View style={styles.eventTitleRow}>
                   <Text style={styles.eventTitle}>{evt.title}</Text>
-                  {evt.isClashing && (
+                  {isClashingActive && (
                     <View style={styles.clashBadge}>
                       <Ionicons name="alert" size={10} color="#FFFFFF" style={{ marginRight: 2 }} />
                       <Text style={styles.clashBadgeText}>CLASH</Text>
