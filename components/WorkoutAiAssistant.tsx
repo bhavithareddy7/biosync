@@ -84,6 +84,10 @@ export const WorkoutAiAssistant: React.FC<WorkoutAiAssistantProps> = ({ onSelect
   const [errorNotice, setErrorNotice] = useState<string | null>(null);
   const [hasServerKey, setHasServerKey] = useState<boolean | null>(null);
 
+  // Active request tracking to prevent stale or aborted responses from overwriting fresh queries
+  const activeControllerRef = useRef<AbortController | null>(null);
+  const activeRequestIdRef = useRef<number>(0);
+
   // Skeleton pulse animation
   const pulseAnim = useRef(new Animated.Value(0.3)).current;
 
@@ -91,6 +95,17 @@ export const WorkoutAiAssistant: React.FC<WorkoutAiAssistantProps> = ({ onSelect
     WorkoutAiService.checkApiStatus().then((status) => {
       setHasServerKey(status.hasKey);
     });
+  }, []);
+
+  // Unmount cleanup: cancel any in-flight request
+  useEffect(() => {
+    return () => {
+      if (activeControllerRef.current) {
+        try {
+          activeControllerRef.current.abort();
+        } catch {}
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -118,25 +133,59 @@ export const WorkoutAiAssistant: React.FC<WorkoutAiAssistantProps> = ({ onSelect
   }, [isLoading, pulseAnim]);
 
   const executeCoachingQuery = async (questionText: string) => {
-    if (!questionText.trim()) return;
+    const trimmed = questionText.trim();
+    if (!trimmed) return;
 
     if (Platform.OS !== 'web') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
 
+    // 1. Abort previous in-flight request if any
+    if (activeControllerRef.current) {
+      try {
+        activeControllerRef.current.abort();
+      } catch {}
+    }
+
+    // 2. Create a BRAND NEW AbortController and bump request sequence ID
+    const controller = new AbortController();
+    activeControllerRef.current = controller;
+    const currentRequestId = ++activeRequestIdRef.current;
+
     setIsLoading(true);
     setErrorNotice(null);
     setActiveResponse(null);
 
-    const result = await WorkoutAiService.fetchCoachingAdvice(questionText, userContext);
-    if (result.response) {
-      setActiveResponse(result.response);
-      setErrorNotice(null);
-    } else {
+    try {
+      const result = await WorkoutAiService.fetchCoachingAdvice(
+        trimmed,
+        userContext,
+        controller.signal
+      );
+
+      // Guard: Discard if a newer query or retry was initiated while waiting
+      if (activeRequestIdRef.current !== currentRequestId) {
+        return;
+      }
+
+      if (result.response) {
+        setActiveResponse(result.response);
+        setErrorNotice(null);
+      } else {
+        setActiveResponse(null);
+        setErrorNotice(result.error || 'Failed to retrieve response from Gemini API');
+      }
+    } catch (err: any) {
+      if (activeRequestIdRef.current !== currentRequestId) {
+        return;
+      }
       setActiveResponse(null);
-      setErrorNotice(result.error || 'Failed to retrieve response from Gemini API');
+      setErrorNotice(err?.message || 'Unexpected communication failure with AI coach');
+    } finally {
+      if (activeRequestIdRef.current === currentRequestId) {
+        setIsLoading(false);
+      }
     }
-    setIsLoading(false);
   };
 
   const handlePromptPress = (question: string) => {
@@ -147,6 +196,11 @@ export const WorkoutAiAssistant: React.FC<WorkoutAiAssistantProps> = ({ onSelect
   const handleAsk = () => {
     if (!query.trim() || isLoading) return;
     executeCoachingQuery(query);
+  };
+
+  const handleRetry = () => {
+    const q = query.trim() || 'How do I protect my lower back while doing dumbbell rows?';
+    executeCoachingQuery(q);
   };
 
   const suggestedEx = activeResponse?.suggestedExerciseId
@@ -297,16 +351,34 @@ export const WorkoutAiAssistant: React.FC<WorkoutAiAssistantProps> = ({ onSelect
       {errorNotice && !isLoading && !activeResponse && (
         <View style={styles.errorCardContainer}>
           <View style={styles.errorCardHeader}>
-            <Ionicons name="alert-circle" size={18} color={Colors.danger} />
-            <Text style={styles.errorCardTitle}>GEMINI API ERROR</Text>
+            <Ionicons
+              name={
+                errorNotice.includes('[Request Timeout]')
+                  ? 'time-outline'
+                  : errorNotice.includes('[Network Error]')
+                  ? 'cloud-offline-outline'
+                  : 'alert-circle'
+              }
+              size={18}
+              color={Colors.danger}
+            />
+            <Text style={styles.errorCardTitle}>
+              {errorNotice.includes('[Request Timeout]')
+                ? 'COACH REQUEST TIMEOUT'
+                : errorNotice.includes('[Network Error]')
+                ? 'CONNECTION ERROR'
+                : 'GEMINI API ERROR'}
+            </Text>
           </View>
           <Text style={styles.errorCardText}>{errorNotice}</Text>
           <View style={styles.errorCardFooter}>
             <Text style={styles.errorCardHint}>
-              Exact response from server. Check your Gemini API key in .env.local or Google AI Studio model availability.
+              {errorNotice.includes('[Request Timeout]')
+                ? 'Gemini reasoning took longer than 45s due to high demand. Tapping retry will immediately start a clean, fresh request.'
+                : 'Exact response from server. Check your Gemini API key in .env.local or Google AI Studio model availability.'}
             </Text>
             <TouchableOpacity
-              onPress={() => executeCoachingQuery(query || 'How do I protect my lower back while doing dumbbell rows?')}
+              onPress={handleRetry}
               style={styles.errorRetryBtn}
             >
               <Ionicons name="refresh" size={12} color="#FFFFFF" style={{ marginRight: 4 }} />

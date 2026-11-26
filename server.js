@@ -11,28 +11,36 @@ const { GoogleGenAI, Type } = require('@google/genai');
 const PORT = process.env.PORT || 8085;
 const distDir = path.join(__dirname, 'dist');
 
-// Read .env.local if present
+// Read .env.local from potential directories
 function loadEnvLocal() {
-  const envLocalPath = path.join(__dirname, '.env.local');
-  if (fs.existsSync(envLocalPath)) {
-    try {
-      const content = fs.readFileSync(envLocalPath, 'utf8');
-      const lines = content.split('\n');
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (trimmed && !trimmed.startsWith('#')) {
-          const match = trimmed.match(/^([^=]+)=(.*)$/);
-          if (match) {
-            const key = match[1].trim();
-            const val = match[2].trim().replace(/^['"](.*)['"]$/, '$1');
-            if (!process.env[key] && val) {
-              process.env[key] = val;
+  const candidatePaths = [
+    path.join(__dirname, '.env.local'),
+    path.resolve(process.cwd(), '.env.local'),
+    'E:\\biosync\\.env.local',
+    'E:\\bio sync\\.env.local',
+  ];
+
+  for (const envLocalPath of candidatePaths) {
+    if (fs.existsSync(envLocalPath)) {
+      try {
+        const content = fs.readFileSync(envLocalPath, 'utf8');
+        const lines = content.split('\n');
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (trimmed && !trimmed.startsWith('#')) {
+            const match = trimmed.match(/^([^=]+)=(.*)$/);
+            if (match) {
+              const key = match[1].trim();
+              const val = match[2].trim().replace(/^['"](.*)['"]$/, '$1');
+              if (val && (!process.env[key] || process.env[key] === 'your_gemini_api_key_here')) {
+                process.env[key] = val;
+              }
             }
           }
         }
+      } catch (e) {
+        console.warn(`Could not read ${envLocalPath}:`, e.message);
       }
-    } catch (e) {
-      console.warn('Could not read .env.local:', e.message);
     }
   }
 }
@@ -54,10 +62,16 @@ function formatGeminiError(err) {
   const raw = typeof err.message === 'string' ? err.message : String(err);
   try {
     const parsed = JSON.parse(raw);
-    if (parsed.error && parsed.error.message) {
-      return parsed.error.message;
+    if (parsed.error) {
+      const codeStr = parsed.error.code ? `[Code ${parsed.error.code}] ` : (parsed.error.status ? `[${parsed.error.status}] ` : '');
+      const msg = parsed.error.message || raw;
+      return `${codeStr}${msg}`.trim();
     }
   } catch {}
+  const status = err.status || err.statusCode;
+  if (status) {
+    return `[HTTP ${status}] ${raw}`;
+  }
   return raw;
 }
 
@@ -244,9 +258,12 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         const errorMsg = formatGeminiError(err);
         console.error('[API /api/coach] Error:', errorMsg);
-        res.writeHead(500, { 'Content-Type': 'application/json' });
+        const statusCode = (err && (err.status || err.statusCode)) ? Number(err.status || err.statusCode) : 500;
+        const validStatus = statusCode >= 400 && statusCode <= 599 ? statusCode : 500;
+        res.writeHead(validStatus, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ 
           error: errorMsg,
+          statusCode: validStatus,
           isConfigError: errorMsg.includes('GEMINI_API_KEY')
         }));
       }
@@ -285,6 +302,9 @@ const server = http.createServer(async (req, res) => {
     }
   });
 });
+
+server.timeout = 120000; // 2 minutes socket timeout
+server.keepAliveTimeout = 65000;
 
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`BioSync server listening on http://127.0.0.1:${PORT}`);

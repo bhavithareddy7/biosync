@@ -49,22 +49,34 @@ STRICT RULES:
  * Helper to resolve GEMINI_API_KEY from environment or .env.local file
  */
 export function getGeminiApiKey(): string | undefined {
-  if (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim().length > 0) {
+  if (
+    process.env.GEMINI_API_KEY &&
+    process.env.GEMINI_API_KEY.trim().length > 0 &&
+    process.env.GEMINI_API_KEY.trim() !== 'your_gemini_api_key_here'
+  ) {
     return process.env.GEMINI_API_KEY.trim();
   }
 
   // Attempt to parse .env.local if on Node/server environment
-  try {
-    const envLocalPath = path.resolve(process.cwd(), '.env.local');
-    if (fs.existsSync(envLocalPath)) {
-      const content = fs.readFileSync(envLocalPath, 'utf8');
-      const match = content.match(/GEMINI_API_KEY\s*=\s*(["']?)([^"'\r\n]+)\1/);
-      if (match && match[2] && match[2].trim().length > 0) {
-        return match[2].trim();
+  const candidatePaths = [
+    path.resolve(process.cwd(), '.env.local'),
+    path.join(__dirname, '..', '.env.local'),
+    'E:\\biosync\\.env.local',
+    'E:\\bio sync\\.env.local',
+  ];
+
+  for (const envLocalPath of candidatePaths) {
+    try {
+      if (fs.existsSync(envLocalPath)) {
+        const content = fs.readFileSync(envLocalPath, 'utf8');
+        const match = content.match(/GEMINI_API_KEY\s*=\s*(["']?)([^"'\r\n]+)\1/);
+        if (match && match[2] && match[2].trim().length > 0 && match[2].trim() !== 'your_gemini_api_key_here') {
+          return match[2].trim();
+        }
       }
+    } catch {
+      // Non-filesystem environments or permission limitations
     }
-  } catch {
-    // Non-filesystem environments or permission limitations
   }
 
   return undefined;
@@ -78,11 +90,17 @@ export function formatGeminiError(err: any): string {
   const raw = typeof err.message === 'string' ? err.message : String(err);
   try {
     const parsed = JSON.parse(raw);
-    if (parsed.error && parsed.error.message) {
-      return parsed.error.message;
+    if (parsed.error) {
+      const codeStr = parsed.error.code ? `[Code ${parsed.error.code}] ` : (parsed.error.status ? `[${parsed.error.status}] ` : '');
+      const msg = parsed.error.message || raw;
+      return `${codeStr}${msg}`.trim();
     }
   } catch {
     // raw string is not JSON
+  }
+  const status = err.status || err.statusCode;
+  if (status) {
+    return `[HTTP ${status}] ${raw}`;
   }
   return raw;
 }

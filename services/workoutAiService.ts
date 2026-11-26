@@ -58,7 +58,7 @@ export class WorkoutAiService {
         : 'http://10.0.2.2:8085/api/status';
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 2000);
+      const timeoutId = setTimeout(() => controller.abort(), 6000);
 
       const res = await fetch(baseUrl, {
         method: 'GET',
@@ -82,35 +82,67 @@ export class WorkoutAiService {
 
   /**
    * Primary entry point: Request structured coaching advice via server-side Gemini API.
-   * If the call fails, the exact API error is returned so the UI displays what went wrong.
+   * If the call fails, the exact HTTP status code and API error are returned so the UI displays what went wrong.
    * NO fake or generic fallback coaching text is returned.
    */
   static async fetchCoachingAdvice(
     query: string,
-    userContext: CoachUserContext
-  ): Promise<{ response?: CoachResponseSchema; error?: string }> {
+    userContext: CoachUserContext,
+    externalSignal?: AbortSignal
+  ): Promise<{ response?: CoachResponseSchema; error?: string; isTimeout?: boolean }> {
     const trimmed = query.trim();
     if (!trimmed) {
       return { error: 'Please enter a workout or biomechanics question.' };
     }
 
-    try {
-      const apiUrl = this.getApiUrl();
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s timeout for live LLM
+    const apiUrl = this.getApiUrl();
+    const internalController = new AbortController();
 
+    // Link externalSignal to internalController if provided
+    let externalAbortHandler: (() => void) | undefined;
+    if (externalSignal) {
+      if (externalSignal.aborted) {
+        return { error: 'Request was cancelled before dispatch.' };
+      }
+      externalAbortHandler = () => {
+        try {
+          internalController.abort('USER_CANCELLED');
+        } catch {
+          internalController.abort();
+        }
+      };
+      externalSignal.addEventListener('abort', externalAbortHandler, { once: true });
+    }
+
+    let isTimedOut = false;
+    const REQUEST_TIMEOUT_MS = 45000; // 45 seconds timeout for LLM reasoning, exponential backoff retries and fallback
+    const timeoutId = setTimeout(() => {
+      isTimedOut = true;
+      try {
+        internalController.abort('REQUEST_TIMEOUT');
+      } catch {
+        internalController.abort();
+      }
+    }, REQUEST_TIMEOUT_MS);
+
+    try {
       const response = await fetch(apiUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'Accept': 'application/json',
         },
         body: JSON.stringify({
           query: trimmed,
           userContext,
         }),
-        signal: controller.signal,
+        signal: internalController.signal,
       });
+
       clearTimeout(timeoutId);
+      if (externalSignal && externalAbortHandler) {
+        externalSignal.removeEventListener('abort', externalAbortHandler);
+      }
 
       if (response.ok) {
         const json: CoachResponseSchema = await response.json();
@@ -125,25 +157,57 @@ export class WorkoutAiService {
         }
       }
 
-      // Extract exact server error message
-      const errText = await response.text();
-      let parsedError = `Server returned HTTP ${response.status}`;
+      // Non-200 HTTP response: extract exact server error and status code
+      const status = response.status;
+      const statusText = response.statusText || '';
+      let serverErrorMsg = `[HTTP ${status}${statusText ? ' ' + statusText : ''}]`;
+
       try {
-        const parsed = JSON.parse(errText);
-        if (parsed.error) {
-          parsedError = parsed.error;
+        const errJson = await response.json();
+        if (errJson && errJson.error) {
+          serverErrorMsg = `[HTTP ${status}] ${errJson.error}`;
         }
       } catch {
-        if (errText && errText.trim().length > 0) {
-          parsedError = errText;
+        const rawText = await response.text().catch(() => '');
+        if (rawText && rawText.trim()) {
+          serverErrorMsg = `[HTTP ${status}] ${rawText.trim()}`;
         }
       }
 
-      console.error('[WorkoutAiService] Live Gemini API error:', parsedError);
-      return { error: parsedError };
+      console.error('[WorkoutAiService] Gemini API server returned error:', serverErrorMsg);
+      return { error: serverErrorMsg };
     } catch (networkErr: any) {
-      console.error('[WorkoutAiService] Live Gemini request failed:', networkErr.message);
-      return { error: networkErr.message || 'Network connection failed' };
+      clearTimeout(timeoutId);
+      if (externalSignal && externalAbortHandler) {
+        externalSignal.removeEventListener('abort', externalAbortHandler);
+      }
+
+      // 1. Timeout detection
+      if (isTimedOut) {
+        const msg = `[Request Timeout] Gemini API did not complete within ${REQUEST_TIMEOUT_MS / 1000}s. The model may be experiencing high demand. Please click "Retry API Call".`;
+        console.warn('[WorkoutAiService]', msg);
+        return { error: msg, isTimeout: true };
+      }
+
+      // 2. External abort / user started a newer query
+      if (externalSignal?.aborted) {
+        return { error: 'Request was cancelled by a newer query.' };
+      }
+
+      // 3. Catch generic AbortError / "signal is aborted without reason"
+      const rawMsg = networkErr?.message || String(networkErr || '');
+      const isAbort = networkErr?.name === 'AbortError' || rawMsg.toLowerCase().includes('aborted');
+
+      if (isAbort) {
+        const msg = '[Request Cancelled] The request was interrupted or aborted prematurely. Tap "Retry API Call" to try again.';
+        console.warn('[WorkoutAiService]', msg, rawMsg);
+        return { error: msg };
+      }
+
+      // 4. Network or connection failure
+      const msg = `[Network Error] Failed to reach ${apiUrl}: ${rawMsg || 'Connection failed. Ensure the server is running on port 8085.'}`;
+      console.error('[WorkoutAiService] Live Gemini request failed:', msg);
+      return { error: msg };
     }
   }
 
