@@ -11,6 +11,8 @@ export interface CoachResponseSchema {
   cuesTitle: string; // e.g., "KEY BIOMECHANICAL CUES", "RECOMMENDED SWAPS", "READINESS ACTION PLAN"
   bulletCues: string[]; // 3 actionable, specific bullet points
   suggestedExerciseId?: string;
+  provider?: string; // "groq" or "gemini"
+  model?: string;    // e.g. "openai/gpt-oss-120b"
 }
 
 export interface CoachUserContext {
@@ -49,9 +51,14 @@ export class WorkoutAiService {
   }
 
   /**
-   * Check if backend has Gemini API key connected
+   * Check if backend has AI key connected (Groq LPU or Google Gemini)
    */
-  static async checkApiStatus(): Promise<{ connected: boolean; hasKey: boolean; model?: string }> {
+  static async checkApiStatus(): Promise<{
+    connected: boolean;
+    hasKey: boolean;
+    activeProvider?: string;
+    model?: string;
+  }> {
     try {
       const baseUrl = Platform.OS === 'web' && typeof window !== 'undefined'
         ? `${window.location.origin}/api/status`
@@ -70,8 +77,9 @@ export class WorkoutAiService {
         const json = await res.json();
         return {
           connected: true,
-          hasKey: Boolean(json.hasGeminiKey),
-          model: json.model || 'gemini-3.8-flash',
+          hasKey: Boolean(json.hasKey || json.hasGroqKey || json.hasGeminiKey),
+          activeProvider: json.activeProvider || (json.hasGroqKey ? 'groq' : 'gemini'),
+          model: json.model || 'Groq LPU + Gemini',
         };
       }
       return { connected: false, hasKey: false };

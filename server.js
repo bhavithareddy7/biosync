@@ -4,6 +4,7 @@
 // ==============================================================================
 
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const { GoogleGenAI, Type } = require('@google/genai');
@@ -132,16 +133,12 @@ async function generateContentWithRetry(ai, model, promptContent, config, maxAtt
   throw lastError;
 }
 
-async function handleGeminiCoach(query, userContext) {
-  const startTime = Date.now();
-  console.log(`[server /api/coach] Incoming request: "${query.substring(0, 60)}"`);
-
-  const apiKey = (process.env.GEMINI_API_KEY || '').trim();
-  if (!apiKey || apiKey === 'your_gemini_api_key_here') {
-    throw new Error('GEMINI_API_KEY is not configured in .env.local or process environment.');
+function callGroqCoach(query, userContext, model = 'openai/gpt-oss-120b') {
+  const groqKey = (process.env.GROQ_API_KEY || '').trim();
+  if (!groqKey || groqKey === 'your_groq_api_key_here') {
+    throw new Error('GROQ_API_KEY is not configured in .env.local');
   }
 
-  const ai = new GoogleGenAI({ apiKey });
   const promptContent = `USER QUERY:
 ${query}
 
@@ -149,63 +146,118 @@ USER CONTEXT ("My Twin" & "My Data"):
 ${JSON.stringify(userContext || {}, null, 2)}
 `;
 
-  const promptConfig = {
-    systemInstruction: COACH_SYSTEM_INSTRUCTION,
-    responseMimeType: 'application/json',
-    responseSchema: {
-      type: Type.OBJECT,
-      properties: {
-        cardTitle: {
-          type: Type.STRING,
-          description: 'Card headline such as FORM GUIDANCE, RECOVERY & READINESS, EXERCISE ALTERNATIVES, or PROGRESSION PLAN',
-        },
-        summary: {
-          type: Type.STRING,
-          description: '2 to 3 crisp, tailored sentences answering the exact question directly without generic fillers',
-        },
-        cuesTitle: {
-          type: Type.STRING,
-          description: 'Action header such as KEY BIOMECHANICAL CUES, RECOMMENDED SWAPS, or READINESS ACTION PLAN',
-        },
-        bulletCues: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.STRING,
-          },
-          description: '3 actionable, specific bullet points with exact joint angles, substitutions, or recovery rules',
-        },
-      },
-      required: ['cardTitle', 'summary', 'cuesTitle', 'bulletCues'],
-    },
-  };
+  const payload = JSON.stringify({
+    model,
+    messages: [
+      {
+        role: 'system',
+        content: `${COACH_SYSTEM_INSTRUCTION}
 
-  let response;
-  try {
-    // Primary: gemini-3.8-flash with 3 retry attempts (exponential backoff + jitter)
-    response = await generateContentWithRetry(ai, 'gemini-3.8-flash', promptContent, promptConfig, 3);
-  } catch (primaryErr) {
-    if (isHighDemandError(primaryErr)) {
-      console.warn(
-        '[server /api/coach] gemini-3.8-flash failed with 503 high-demand error after 3 attempts. Automatically falling back to gemini-3.5-flash-lite...'
-      );
-      try {
-        // Fallback: gemini-3.5-flash-lite
-        response = await generateContentWithRetry(ai, 'gemini-3.5-flash-lite', promptContent, promptConfig, 3);
-      } catch (fallbackErr) {
-        throw new Error(formatGeminiError(fallbackErr));
+You must respond ONLY with a valid JSON object matching this schema:
+{
+  "cardTitle": string (e.g. "FORM GUIDANCE", "RECOVERY & READINESS", "EXERCISE ALTERNATIVES", or "PROGRESSION PLAN"),
+  "summary": string (2 to 3 crisp, tailored sentences answering the exact question directly without generic fillers),
+  "cuesTitle": string (e.g. "KEY BIOMECHANICAL CUES", "RECOMMENDED SWAPS", or "READINESS ACTION PLAN"),
+  "bulletCues": array of 3 strings (actionable, specific bullet points with exact joint angles, substitutions, or recovery rules)
+}`
+      },
+      {
+        role: 'user',
+        content: promptContent
       }
-    } else {
-      throw new Error(formatGeminiError(primaryErr));
+    ],
+    response_format: { type: 'json_object' },
+    temperature: 0.2
+  });
+
+  return new Promise((resolve, reject) => {
+    const req = https.request({
+      hostname: 'api.groq.com',
+      path: '/openai/v1/chat/completions',
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${groqKey}`,
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload)
+      },
+      timeout: 15000
+    }, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          try {
+            const parsed = JSON.parse(data);
+            const content = parsed.choices?.[0]?.message?.content;
+            if (!content) throw new Error('Empty response from Groq');
+            const result = JSON.parse(content);
+            result.provider = 'groq';
+            result.model = model;
+            resolve(result);
+          } catch (e) {
+            reject(new Error(`Groq JSON parse error: ${e.message}`));
+          }
+        } else {
+          try {
+            const errObj = JSON.parse(data);
+            reject(new Error(errObj.error?.message || `Groq returned HTTP ${res.statusCode}`));
+          } catch {
+            reject(new Error(`Groq returned HTTP ${res.statusCode}: ${data}`));
+          }
+        }
+      });
+    });
+
+    req.on('error', reject);
+    req.on('timeout', () => {
+      req.destroy();
+      reject(new Error('Groq request timed out after 15s'));
+    });
+    req.write(payload);
+    req.end();
+  });
+}
+
+async function handleAiCoach(query, userContext) {
+  const startTime = Date.now();
+  console.log(`[server /api/coach] Incoming request: "${query.substring(0, 60)}"`);
+
+  const hasGroq = Boolean(process.env.GROQ_API_KEY && process.env.GROQ_API_KEY.trim().startsWith('gsk_'));
+  const hasGemini = Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim().length > 10 && process.env.GEMINI_API_KEY !== 'your_gemini_api_key_here');
+
+  // Strategy: Try Groq LPU first for lightning-fast sub-second responses and high limits (14,400/day)
+  if (hasGroq) {
+    try {
+      console.log('[server /api/coach] Calling Groq LPU (openai/gpt-oss-120b)...');
+      const result = await callGroqCoach(query, userContext, 'openai/gpt-oss-120b');
+      console.log(`[server /api/coach] Groq completed successfully in ${Date.now() - startTime}ms`);
+      return result;
+    } catch (groqErr) {
+      console.warn(`[server /api/coach] Groq primary failed (${groqErr.message}). Trying backup qwen3.8-27b...`);
+      try {
+        const backupResult = await callGroqCoach(query, userContext, 'qwen/qwen3.8-27b');
+        console.log(`[server /api/coach] Groq backup completed in ${Date.now() - startTime}ms`);
+        return backupResult;
+      } catch (backupErr) {
+        console.warn(`[server /api/coach] Groq backup failed (${backupErr.message}).`);
+        if (!hasGemini) {
+          throw new Error(`Groq API error: ${groqErr.message}`);
+        }
+        console.log('[server /api/coach] Falling back to Google Gemini...');
+      }
     }
   }
 
-  const responseText = response.text;
-  if (!responseText) {
-    throw new Error('Empty response received from Gemini API');
+  // Fallback or Primary when Groq is not configured: Google Gemini
+  if (hasGemini) {
+    console.log('[server /api/coach] Calling Google Gemini API...');
+    const result = await handleGeminiCoach(query, userContext);
+    result.provider = 'gemini';
+    console.log(`[server /api/coach] Gemini completed in ${Date.now() - startTime}ms`);
+    return result;
   }
 
-  console.log(`[server /api/coach] Completed successfully in ${Date.now() - startTime}ms`);
-  return JSON.parse(responseText);
+  throw new Error('Neither GROQ_API_KEY nor GEMINI_API_KEY is configured in .env.local.');
 }
 
 const mimeTypes = {
@@ -256,7 +308,7 @@ const server = http.createServer(async (req, res) => {
           return;
         }
 
-        const result = await handleGeminiCoach(query, userContext);
+        const result = await handleAiCoach(query, userContext);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));
       } catch (err) {
@@ -268,7 +320,7 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ 
           error: errorMsg,
           statusCode: validStatus,
-          isConfigError: errorMsg.includes('GEMINI_API_KEY')
+          isConfigError: errorMsg.includes('GEMINI_API_KEY') || errorMsg.includes('GROQ_API_KEY')
         }));
       }
     });
@@ -277,12 +329,21 @@ const server = http.createServer(async (req, res) => {
 
   // API Status Route: GET /api/status
   if (url.pathname === '/api/status' && req.method === 'GET') {
-    const hasKey = Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim() !== 'your_gemini_api_key_here');
+    const hasGeminiKey = Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim() !== 'your_gemini_api_key_here');
+    const hasGroqKey = Boolean(process.env.GROQ_API_KEY && process.env.GROQ_API_KEY.trim().startsWith('gsk_'));
+    const activeProvider = hasGroqKey ? 'groq' : (hasGeminiKey ? 'gemini' : 'none');
+    const modelDesc = hasGroqKey
+      ? 'Groq LPU (openai/gpt-oss-120b) + Gemini Fallback'
+      : (hasGeminiKey ? 'gemini-3.8-flash (fallback: gemini-3.5-flash-lite)' : 'None');
+
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       status: 'ok',
-      hasGeminiKey: hasKey,
-      model: 'gemini-3.8-flash (fallback: gemini-3.5-flash-lite)',
+      hasKey: hasGroqKey || hasGeminiKey,
+      hasGroqKey,
+      hasGeminiKey,
+      activeProvider,
+      model: modelDesc,
     }));
     return;
   }

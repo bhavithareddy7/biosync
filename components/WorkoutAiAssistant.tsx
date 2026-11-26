@@ -83,6 +83,8 @@ export const WorkoutAiAssistant: React.FC<WorkoutAiAssistantProps> = ({ onSelect
   const [activeResponse, setActiveResponse] = useState<CoachResponseSchema | null>(null);
   const [errorNotice, setErrorNotice] = useState<string | null>(null);
   const [hasServerKey, setHasServerKey] = useState<boolean | null>(null);
+  const [activeProvider, setActiveProvider] = useState<string>('groq');
+  const [serverModel, setServerModel] = useState<string>('Groq LPU (openai/gpt-oss-120b) + Gemini');
 
   // Active request tracking to prevent stale or aborted responses from overwriting fresh queries
   const activeControllerRef = useRef<AbortController | null>(null);
@@ -94,6 +96,8 @@ export const WorkoutAiAssistant: React.FC<WorkoutAiAssistantProps> = ({ onSelect
   useEffect(() => {
     WorkoutAiService.checkApiStatus().then((status) => {
       setHasServerKey(status.hasKey);
+      if (status.activeProvider) setActiveProvider(status.activeProvider);
+      if (status.model) setServerModel(status.model);
     });
   }, []);
 
@@ -234,7 +238,7 @@ export const WorkoutAiAssistant: React.FC<WorkoutAiAssistantProps> = ({ onSelect
           <View>
             <Text style={styles.title}>BioSync AI Gym Coach</Text>
             <Text style={styles.subtitle}>
-              Powered by Google Gemini (gemini-3.8-flash / gemini-3.5-flash-lite)
+              Powered by {activeProvider === 'groq' ? 'Groq LPU (openai/gpt-oss-120b)' : 'Google Gemini (gemini-3.8-flash)'}
             </Text>
           </View>
         </View>
@@ -257,7 +261,7 @@ export const WorkoutAiAssistant: React.FC<WorkoutAiAssistantProps> = ({ onSelect
               hasServerKey ? styles.statusBadgeTextLive : styles.statusBadgeTextEngine,
             ]}
           >
-            {hasServerKey ? 'GEMINI LIVE' : 'API READY'}
+            {hasServerKey ? (activeProvider === 'groq' ? 'GROQ LPU LIVE' : 'GEMINI LIVE') : 'API READY'}
           </Text>
         </View>
       </View>
@@ -415,7 +419,7 @@ export const WorkoutAiAssistant: React.FC<WorkoutAiAssistantProps> = ({ onSelect
             <View style={styles.sourceTag}>
               <Ionicons name="sparkles" size={10} color={Colors.primaryAccent} />
               <Text style={[styles.sourceTagText, { color: Colors.primaryAccent }]}>
-                gemini-live
+                {activeResponse.provider === 'groq' ? 'groq-lpu (ultra-fast)' : 'gemini-live'}
               </Text>
             </View>
           </View>

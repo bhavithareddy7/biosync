@@ -6,12 +6,15 @@
 import { GoogleGenAI, Type } from '@google/genai';
 import fs from 'fs';
 import path from 'path';
+import https from 'https';
 
 export interface CoachResponseSchema {
   cardTitle: string;
   summary: string;
   cuesTitle: string;
   bulletCues: string[];
+  provider?: string;
+  model?: string;
 }
 
 export interface CoachUserContext {
@@ -80,6 +83,127 @@ export function getGeminiApiKey(): string | undefined {
   }
 
   return undefined;
+}
+
+export function getGroqApiKey(): string | undefined {
+  if (
+    process.env.GROQ_API_KEY &&
+    process.env.GROQ_API_KEY.trim().startsWith('gsk_')
+  ) {
+    return process.env.GROQ_API_KEY.trim();
+  }
+
+  const candidatePaths = [
+    path.resolve(process.cwd(), '.env.local'),
+    path.join(__dirname, '..', '.env.local'),
+    'E:\\biosync\\.env.local',
+    'E:\\bio sync\\.env.local',
+  ];
+
+  for (const envPath of candidatePaths) {
+    try {
+      if (fs.existsSync(envPath)) {
+        const content = fs.readFileSync(envPath, 'utf8');
+        const match = content.match(/GROQ_API_KEY\s*=\s*(["']?)([^"'\r\n]+)\1/);
+        if (match && match[2] && match[2].trim().startsWith('gsk_')) {
+          return match[2].trim();
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  return undefined;
+}
+
+export function callGroqCoach(
+  query: string,
+  userContext: CoachUserContext,
+  model = 'openai/gpt-oss-120b'
+): Promise<CoachResponseSchema> {
+  const groqKey = getGroqApiKey();
+  if (!groqKey) {
+    throw new Error('GROQ_API_KEY is not configured in .env.local');
+  }
+
+  const promptContent = `USER QUERY:
+${query}
+
+USER CONTEXT ("My Twin" & "My Data"):
+${JSON.stringify(userContext || {}, null, 2)}
+`;
+
+  const payload = JSON.stringify({
+    model,
+    messages: [
+      {
+        role: 'system',
+        content: `${COACH_SYSTEM_INSTRUCTION}
+
+You must respond ONLY with a valid JSON object matching this schema:
+{
+  "cardTitle": string (e.g. "FORM GUIDANCE", "RECOVERY & READINESS", "EXERCISE ALTERNATIVES", or "PROGRESSION PLAN"),
+  "summary": string (2 to 3 crisp, tailored sentences answering the exact question directly without generic fillers),
+  "cuesTitle": string (e.g. "KEY BIOMECHANICAL CUES", "RECOMMENDED SWAPS", or "READINESS ACTION PLAN"),
+  "bulletCues": array of 3 strings (actionable, specific bullet points with exact joint angles, substitutions, or recovery rules)
+}`
+      },
+      {
+        role: 'user',
+        content: promptContent
+      }
+    ],
+    response_format: { type: 'json_object' },
+    temperature: 0.2
+  });
+
+  return new Promise((resolve, reject) => {
+    const req = https.request({
+      hostname: 'api.groq.com',
+      path: '/openai/v1/chat/completions',
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${groqKey}`,
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload)
+      },
+      timeout: 15000
+    }, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+          try {
+            const parsed = JSON.parse(data);
+            const content = parsed.choices?.[0]?.message?.content;
+            if (!content) throw new Error('Empty response from Groq');
+            const result: CoachResponseSchema = JSON.parse(content);
+            result.provider = 'groq';
+            result.model = model;
+            resolve(result);
+          } catch (e: any) {
+            reject(new Error(`Groq JSON parse error: ${e.message}`));
+          }
+        } else {
+          try {
+            const errObj = JSON.parse(data);
+            reject(new Error(errObj.error?.message || `Groq returned HTTP ${res.statusCode}`));
+          } catch {
+            reject(new Error(`Groq returned HTTP ${res.statusCode}: ${data}`));
+          }
+        }
+      });
+    });
+
+    req.on('error', reject);
+    req.on('timeout', () => {
+      req.destroy();
+      reject(new Error('Groq request timed out after 15s'));
+    });
+    req.write(payload);
+    req.end();
+  });
 }
 
 /**
@@ -178,22 +302,44 @@ async function generateContentWithRetry(
 }
 
 /**
- * Generate structured coaching feedback using gemini-3.8-flash as primary
- * with 3 retry attempts (exponential backoff + jitter) and automatic fallback to gemini-3.5-flash-lite on 503 errors.
+ * Generate structured coaching feedback using Groq LPU (openai/gpt-oss-120b) as primary
+ * with automatic fallback to Google Gemini (gemini-3.8-flash / gemini-3.5-flash-lite).
  */
 export async function generateCoachResponse(
   query: string,
   userContext: CoachUserContext
 ): Promise<CoachResponseSchema> {
-  const apiKey = getGeminiApiKey();
+  const groqKey = getGroqApiKey();
+  const geminiKey = getGeminiApiKey();
 
-  if (!apiKey || apiKey === 'your_gemini_api_key_here') {
+  // 1. Try Groq LPU if available (sub-second response, 14,400 requests/day limit)
+  if (groqKey) {
+    try {
+      const groqResult = await callGroqCoach(query, userContext, 'openai/gpt-oss-120b');
+      return groqResult;
+    } catch (groqErr: any) {
+      console.warn(`[geminiCoachBackend] Groq primary failed: ${groqErr.message}. Trying backup qwen3.8-27b...`);
+      try {
+        const backupResult = await callGroqCoach(query, userContext, 'qwen/qwen3.8-27b');
+        return backupResult;
+      } catch (backupErr: any) {
+        console.warn(`[geminiCoachBackend] Groq backup failed: ${backupErr.message}`);
+        if (!geminiKey) {
+          throw new Error(`Groq API Error: ${groqErr.message}`);
+        }
+        console.log('[geminiCoachBackend] Falling back to Gemini...');
+      }
+    }
+  }
+
+  // 2. Fallback or Primary when Groq is not configured: Google Gemini
+  if (!geminiKey || geminiKey === 'your_gemini_api_key_here') {
     throw new Error(
-      'GEMINI_API_KEY is not configured. Please set GEMINI_API_KEY in .env.local or process environment.'
+      'Neither GROQ_API_KEY nor GEMINI_API_KEY is configured. Please set GROQ_API_KEY or GEMINI_API_KEY in .env.local.'
     );
   }
 
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = new GoogleGenAI({ apiKey: geminiKey });
 
   const promptContent = `USER QUERY:
 ${query}
@@ -258,5 +404,6 @@ ${JSON.stringify(userContext, null, 2)}
   }
 
   const parsed: CoachResponseSchema = JSON.parse(responseText);
+  parsed.provider = 'gemini';
   return parsed;
 }
