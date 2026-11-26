@@ -301,9 +301,38 @@ async function generateContentWithRetry(
   throw lastError;
 }
 
+export async function callGroqWithModelFallback(
+  query: string,
+  userContext: CoachUserContext
+): Promise<CoachResponseSchema> {
+  const candidateGroqModels = [
+    'llama-3.3-70b-versatile',
+    'llama-3.1-8b-instant',
+    'openai/gpt-oss-120b',
+    'qwen/qwen3.8-27b',
+  ];
+
+  let lastGroqError: any = null;
+  for (const model of candidateGroqModels) {
+    try {
+      const res = await callGroqCoach(query, userContext, model);
+      return res;
+    } catch (err: any) {
+      lastGroqError = err;
+      const msg = err.message || '';
+      const isNotFound = msg.includes('does not exist') || msg.includes('decommissioned') || msg.includes('404');
+      if (isNotFound) {
+        continue;
+      }
+    }
+  }
+  throw lastGroqError || new Error('All Groq candidate models failed');
+}
+
 /**
- * Generate structured coaching feedback using Groq LPU (openai/gpt-oss-120b) as primary
- * with automatic fallback to Google Gemini (gemini-3.8-flash / gemini-3.5-flash-lite).
+ * Generate structured coaching feedback using Dual-Provider Failover:
+ * Primary: Groq LPU (llama-3.3-70b-versatile or llama-3.1-8b-instant / gpt-oss-120b)
+ * Secondary / Fallback: Google Gemini (gemini-3.8-flash / gemini-3.5-flash-lite)
  */
 export async function generateCoachResponse(
   query: string,
@@ -312,27 +341,20 @@ export async function generateCoachResponse(
   const groqKey = getGroqApiKey();
   const geminiKey = getGeminiApiKey();
 
-  // 1. Try Groq LPU if available (sub-second response, 14,400 requests/day limit)
+  // 1. Primary: Groq LPU (Instant sub-second response, 14,400 requests/day limit)
   if (groqKey) {
     try {
-      const groqResult = await callGroqCoach(query, userContext, 'openai/gpt-oss-120b');
+      const groqResult = await callGroqWithModelFallback(query, userContext);
       return groqResult;
     } catch (groqErr: any) {
-      console.warn(`[geminiCoachBackend] Groq primary failed: ${groqErr.message}. Trying backup qwen3.8-27b...`);
-      try {
-        const backupResult = await callGroqCoach(query, userContext, 'qwen/qwen3.8-27b');
-        return backupResult;
-      } catch (backupErr: any) {
-        console.warn(`[geminiCoachBackend] Groq backup failed: ${backupErr.message}`);
-        if (!geminiKey) {
-          throw new Error(`Groq API Error: ${groqErr.message}`);
-        }
-        console.log('[geminiCoachBackend] Falling back to Gemini...');
+      console.warn(`[geminiCoachBackend] Groq failed: ${groqErr.message}. Initiating failover to Gemini...`);
+      if (!geminiKey) {
+        throw new Error(`Groq API Error: ${groqErr.message}`);
       }
     }
   }
 
-  // 2. Fallback or Primary when Groq is not configured: Google Gemini
+  // 2. Secondary / Fallback: Google Gemini
   if (!geminiKey || geminiKey === 'your_gemini_api_key_here') {
     throw new Error(
       'Neither GROQ_API_KEY nor GEMINI_API_KEY is configured. Please set GROQ_API_KEY or GEMINI_API_KEY in .env.local.'

@@ -218,6 +218,33 @@ You must respond ONLY with a valid JSON object matching this schema:
   });
 }
 
+async function callGroqWithModelFallback(query, userContext) {
+  const candidateGroqModels = [
+    'llama-3.3-70b-versatile',
+    'llama-3.1-8b-instant',
+    'openai/gpt-oss-120b',
+    'qwen/qwen3.8-27b',
+  ];
+
+  let lastGroqError = null;
+  for (const model of candidateGroqModels) {
+    try {
+      console.log(`[server /api/coach] Trying Groq model: ${model}...`);
+      const res = await callGroqCoach(query, userContext, model);
+      return res;
+    } catch (err) {
+      lastGroqError = err;
+      const msg = err.message || '';
+      const isNotFound = msg.includes('does not exist') || msg.includes('decommissioned') || msg.includes('404');
+      if (isNotFound) {
+        continue;
+      }
+      console.warn(`[server /api/coach] Groq model ${model} failed (${msg}). Trying next Groq model...`);
+    }
+  }
+  throw lastGroqError || new Error('All Groq candidate models failed');
+}
+
 async function handleAiCoach(query, userContext) {
   const startTime = Date.now();
   console.log(`[server /api/coach] Incoming request: "${query.substring(0, 60)}"`);
@@ -225,35 +252,29 @@ async function handleAiCoach(query, userContext) {
   const hasGroq = Boolean(process.env.GROQ_API_KEY && process.env.GROQ_API_KEY.trim().startsWith('gsk_'));
   const hasGemini = Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim().length > 10 && process.env.GEMINI_API_KEY !== 'your_gemini_api_key_here');
 
-  // Strategy: Try Groq LPU first for lightning-fast sub-second responses and high limits (14,400/day)
+  // Primary: Groq LPU (llama-3.3-70b-versatile or llama-3.1-8b-instant with LPU failover)
+  // Provides instant sub-second responses and never hits 20 req/day limits
   if (hasGroq) {
     try {
-      console.log('[server /api/coach] Calling Groq LPU (openai/gpt-oss-120b)...');
-      const result = await callGroqCoach(query, userContext, 'openai/gpt-oss-120b');
-      console.log(`[server /api/coach] Groq completed successfully in ${Date.now() - startTime}ms`);
+      console.log('[server /api/coach] Calling Primary: Groq LPU...');
+      const result = await callGroqWithModelFallback(query, userContext);
+      console.log(`[server /api/coach] Primary Groq succeeded in ${Date.now() - startTime}ms (${result.model})`);
       return result;
     } catch (groqErr) {
-      console.warn(`[server /api/coach] Groq primary failed (${groqErr.message}). Trying backup qwen3.8-27b...`);
-      try {
-        const backupResult = await callGroqCoach(query, userContext, 'qwen/qwen3.8-27b');
-        console.log(`[server /api/coach] Groq backup completed in ${Date.now() - startTime}ms`);
-        return backupResult;
-      } catch (backupErr) {
-        console.warn(`[server /api/coach] Groq backup failed (${backupErr.message}).`);
-        if (!hasGemini) {
-          throw new Error(`Groq API error: ${groqErr.message}`);
-        }
-        console.log('[server /api/coach] Falling back to Google Gemini...');
+      console.warn(`[server /api/coach] All Groq options failed (${groqErr.message}). Initiating Failover to Gemini...`);
+      if (!hasGemini) {
+        throw new Error(`Groq API error: ${groqErr.message}`);
       }
     }
   }
 
-  // Fallback or Primary when Groq is not configured: Google Gemini
+  // Secondary / Fallback: Google Gemini
+  // If Groq is ever offline, unreachable, or unconfigured, it calls Gemini
   if (hasGemini) {
-    console.log('[server /api/coach] Calling Google Gemini API...');
+    console.log('[server /api/coach] Calling Secondary / Fallback: Google Gemini API...');
     const result = await handleGeminiCoach(query, userContext);
     result.provider = 'gemini';
-    console.log(`[server /api/coach] Gemini completed in ${Date.now() - startTime}ms`);
+    console.log(`[server /api/coach] Secondary Gemini completed in ${Date.now() - startTime}ms`);
     return result;
   }
 
