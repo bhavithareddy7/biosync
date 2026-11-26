@@ -21,6 +21,7 @@ import { DigitalTwinVisualizer } from '../../components/DigitalTwinVisualizer';
 import { MetricCard } from '../../components/MetricCard';
 import { ActivityBarChart } from '../../components/ActivityBarChart';
 import { InsightCard } from '../../components/InsightCard';
+import { ScheduleCalendarHarmonizer } from '../../components/ScheduleCalendarHarmonizer';
 
 export default function HomeDashboardScreen() {
   const router = useRouter();
@@ -173,6 +174,9 @@ export default function HomeDashboardScreen() {
           </View>
           <Ionicons name="chevron-forward" size={18} color={Colors.primaryAccent} />
         </TouchableOpacity>
+
+        {/* SECTION: CIRCADIAN CALENDAR & AI SCHEDULE HARMONIZER */}
+        <ScheduleCalendarHarmonizer />
 
         {/* SECTION B: KEY HEALTH METRICS */}
         <View style={styles.sectionHeaderRow}>

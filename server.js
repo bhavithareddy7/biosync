@@ -281,6 +281,132 @@ async function handleAiCoach(query, userContext) {
   throw new Error('Neither GROQ_API_KEY nor GEMINI_API_KEY is configured in .env.local.');
 }
 
+const SCHEDULE_SYSTEM_INSTRUCTION = `You are BioSync Circadian & Schedule Intelligence AI.
+Analyze the user's daily scheduled events, identify all time overlaps, transit/buffer violations, and sleep/recovery compression clashes alongside their biometric context ("My Twin" data).
+
+STRICT RULES:
+1. Identify all direct time overlaps (e.g. Work 9-5 vs Gym 3-6) and buffer/sleep conflicts (e.g. Party until 11pm vs 10pm sleep bedtime).
+2. Connect the schedule clashes directly to user biometrics (e.g. Resting Heart Rate, baseline sleep need, recovery percentage, and injury risks).
+3. Generate a realistic, non-clashing revised schedule that respects work hours, provides adequate training, preserves social commitments, and protects minimum sleep requirements.
+4. Output strict JSON matching the schema:
+{
+  "title": "SCHEDULE CLASH RESOLUTION & CIRCADIAN HARMONY",
+  "conflictSummary": string,
+  "recoveryImpactScore": string,
+  "optimizedEvents": [
+    {
+      "id": string,
+      "title": string,
+      "category": string,
+      "startTime": "HH:MM",
+      "endTime": "HH:MM",
+      "reason": string
+    }
+  ],
+  "circadianRecommendations": [string, string, string]
+}
+`;
+
+async function handleScheduleHarmonize(events, userContext) {
+  const startTime = Date.now();
+  console.log(`[server /api/schedule/harmonize] Harmonizing ${events.length} events...`);
+
+  const hasGroq = Boolean(process.env.GROQ_API_KEY && process.env.GROQ_API_KEY.trim().startsWith('gsk_'));
+  const hasGemini = Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim().length > 10 && process.env.GEMINI_API_KEY !== 'your_gemini_api_key_here');
+
+  const promptContent = `CURRENT EVENTS:
+${JSON.stringify(events, null, 2)}
+
+USER BIOMETRIC CONTEXT:
+${JSON.stringify(userContext || {}, null, 2)}
+`;
+
+  // Try Groq Primary
+  if (hasGroq) {
+    const candidateGroqModels = [
+      'openai/gpt-oss-120b',
+      'qwen/qwen3.8-27b',
+      'llama-3.3-70b-versatile',
+      'llama-3.1-8b-instant',
+    ];
+
+    for (const model of candidateGroqModels) {
+      try {
+        console.log(`[server /api/schedule/harmonize] Trying Groq model: ${model}...`);
+        const payload = JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: SCHEDULE_SYSTEM_INSTRUCTION },
+            { role: 'user', content: promptContent },
+          ],
+          response_format: { type: 'json_object' },
+          temperature: 0.2,
+        });
+
+        const resData = await new Promise((resolve, reject) => {
+          const req = https.request({
+            hostname: 'api.groq.com',
+            path: '/openai/v1/chat/completions',
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${process.env.GROQ_API_KEY.trim()}`,
+              'Content-Type': 'application/json',
+              'Content-Length': Buffer.byteLength(payload),
+            },
+            timeout: 15000,
+          }, (res) => {
+            let d = '';
+            res.on('data', chunk => d += chunk);
+            res.on('end', () => {
+              if (res.statusCode >= 200 && res.statusCode < 300) {
+                try {
+                  const p = JSON.parse(d);
+                  resolve(JSON.parse(p.choices[0].message.content));
+                } catch (e) {
+                  reject(e);
+                }
+              } else {
+                reject(new Error(`Groq HTTP ${res.statusCode}: ${d}`));
+              }
+            });
+          });
+          req.on('error', reject);
+          req.on('timeout', () => { req.destroy(); reject(new Error('Groq timeout')); });
+          req.write(payload);
+          req.end();
+        });
+
+        resData.provider = 'groq';
+        resData.model = model;
+        console.log(`[server /api/schedule/harmonize] Groq succeeded in ${Date.now() - startTime}ms (${model})`);
+        return resData;
+      } catch (err) {
+        console.warn(`[server /api/schedule/harmonize] Groq model ${model} failed (${err.message}). Trying next...`);
+      }
+    }
+  }
+
+  // Gemini Fallback
+  if (hasGemini) {
+    console.log('[server /api/schedule/harmonize] Calling Gemini Fallback...');
+    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY.trim() });
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.5-flash-lite',
+      contents: promptContent,
+      config: {
+        systemInstruction: SCHEDULE_SYSTEM_INSTRUCTION,
+        responseMimeType: 'application/json',
+      },
+    });
+    const parsed = JSON.parse(response.text);
+    parsed.provider = 'gemini';
+    parsed.model = 'gemini-3.5-flash-lite';
+    return parsed;
+  }
+
+  throw new Error('Neither GROQ_API_KEY nor GEMINI_API_KEY configured for schedule harmonization.');
+}
+
 const mimeTypes = {
   '.html': 'text/html',
   '.js': 'text/javascript',
@@ -343,6 +469,40 @@ const server = http.createServer(async (req, res) => {
           statusCode: validStatus,
           isConfigError: errorMsg.includes('GEMINI_API_KEY') || errorMsg.includes('GROQ_API_KEY')
         }));
+      }
+    });
+    return;
+  }
+
+  // API Route: POST /api/schedule/harmonize
+  if (url.pathname === '/api/schedule/harmonize' && req.method === 'POST') {
+    let bodyData = '';
+    req.on('data', chunk => {
+      bodyData += chunk;
+      if (bodyData.length > 1e6) {
+        req.connection.destroy();
+      }
+    });
+
+    req.on('end', async () => {
+      try {
+        const body = JSON.parse(bodyData || '{}');
+        const events = body.events;
+        const userContext = body.userContext;
+
+        if (!Array.isArray(events) || events.length === 0) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Events array is required' }));
+          return;
+        }
+
+        const result = await handleScheduleHarmonize(events, userContext);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (err) {
+        console.error('[API /api/schedule/harmonize] Error:', err.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
       }
     });
     return;
