@@ -1,6 +1,6 @@
 // ==============================================================================
 // BioSync Gemini Coach Backend Service (@google/genai SDK)
-// Server-side LLM processing with gemini-2.5-flash and Structured Outputs
+// Server-side LLM processing with gemini-3.8-flash and Structured Outputs
 // ==============================================================================
 
 import { GoogleGenAI, Type } from '@google/genai';
@@ -88,7 +88,7 @@ export function formatGeminiError(err: any): string {
 }
 
 /**
- * Generate structured coaching feedback using gemini-2.5-flash (with gemini-2.0-flash backup)
+ * Generate structured coaching feedback using gemini-3.8-flash exclusively
  */
 export async function generateCoachResponse(
   query: string,
@@ -111,61 +111,50 @@ USER CONTEXT ("My Twin" & "My Data"):
 ${JSON.stringify(userContext, null, 2)}
 `;
 
-  // Valid Gemini API models: gemini-2.5-flash with gemini-2.0-flash as backup
-  const CANDIDATE_MODELS = [
-    'gemini-2.5-flash',
-    'gemini-2.0-flash',
-  ];
-
-  let lastError: any = null;
-
-  for (const modelName of CANDIDATE_MODELS) {
-    try {
-      const response = await ai.models.generateContent({
-        model: modelName,
-        contents: promptContent,
-        config: {
-          systemInstruction: COACH_SYSTEM_INSTRUCTION,
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              cardTitle: {
-                type: Type.STRING,
-                description: 'Card headline such as FORM GUIDANCE, RECOVERY & READINESS, EXERCISE ALTERNATIVES, or PROGRESSION PLAN',
-              },
-              summary: {
-                type: Type.STRING,
-                description: '2 to 3 crisp, tailored sentences answering the exact question directly without generic fillers',
-              },
-              cuesTitle: {
-                type: Type.STRING,
-                description: 'Action header such as KEY BIOMECHANICAL CUES, RECOMMENDED SWAPS, or READINESS ACTION PLAN',
-              },
-              bulletCues: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.STRING,
-                },
-                description: '3 actionable, specific bullet points with exact joint angles, substitutions, or recovery rules',
-              },
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.8-flash',
+      contents: promptContent,
+      config: {
+        systemInstruction: COACH_SYSTEM_INSTRUCTION,
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            cardTitle: {
+              type: Type.STRING,
+              description: 'Card headline such as FORM GUIDANCE, RECOVERY & READINESS, EXERCISE ALTERNATIVES, or PROGRESSION PLAN',
             },
-            required: ['cardTitle', 'summary', 'cuesTitle', 'bulletCues'],
+            summary: {
+              type: Type.STRING,
+              description: '2 to 3 crisp, tailored sentences answering the exact question directly without generic fillers',
+            },
+            cuesTitle: {
+              type: Type.STRING,
+              description: 'Action header such as KEY BIOMECHANICAL CUES, RECOMMENDED SWAPS, or READINESS ACTION PLAN',
+            },
+            bulletCues: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.STRING,
+              },
+              description: '3 actionable, specific bullet points with exact joint angles, substitutions, or recovery rules',
+            },
           },
+          required: ['cardTitle', 'summary', 'cuesTitle', 'bulletCues'],
         },
-      });
+      },
+    });
 
-      const responseText = response.text;
-      if (responseText) {
-        const parsed: CoachResponseSchema = JSON.parse(responseText);
-        return parsed;
-      }
-    } catch (err: any) {
-      console.warn(`[geminiCoachBackend] Model ${modelName} failed, attempting next:`, err.message);
-      lastError = err;
+    const responseText = response.text;
+    if (!responseText) {
+      throw new Error('Received empty response from Gemini API');
     }
-  }
 
-  const friendlyMsg = formatGeminiError(lastError);
-  throw new Error(friendlyMsg);
+    const parsed: CoachResponseSchema = JSON.parse(responseText);
+    return parsed;
+  } catch (err: any) {
+    const friendlyMsg = formatGeminiError(err);
+    throw new Error(friendlyMsg);
+  }
 }

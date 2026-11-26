@@ -180,7 +180,7 @@ export const WorkoutAiAssistant: React.FC<WorkoutAiAssistantProps> = ({ onSelect
           <View>
             <Text style={styles.title}>BioSync AI Gym Coach</Text>
             <Text style={styles.subtitle}>
-              Powered by Google Gemini (gemini-2.5-flash / gemini-2.0-flash)
+              Powered by Google Gemini (gemini-3.8-flash)
             </Text>
           </View>
         </View>

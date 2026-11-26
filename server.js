@@ -75,62 +75,51 @@ USER CONTEXT ("My Twin" & "My Data"):
 ${JSON.stringify(userContext || {}, null, 2)}
 `;
 
-  // Valid Gemini API models: gemini-2.5-flash with gemini-2.0-flash as backup
-  const CANDIDATE_MODELS = [
-    'gemini-2.5-flash',
-    'gemini-2.0-flash',
-  ];
-
-  let lastError = null;
-
-  for (const modelName of CANDIDATE_MODELS) {
-    try {
-      const response = await ai.models.generateContent({
-        model: modelName,
-        contents: promptContent,
-        config: {
-          systemInstruction: COACH_SYSTEM_INSTRUCTION,
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              cardTitle: {
-                type: Type.STRING,
-                description: 'Card headline such as FORM GUIDANCE, RECOVERY & READINESS, EXERCISE ALTERNATIVES, or PROGRESSION PLAN',
-              },
-              summary: {
-                type: Type.STRING,
-                description: '2 to 3 crisp, tailored sentences answering the exact question directly without generic fillers',
-              },
-              cuesTitle: {
-                type: Type.STRING,
-                description: 'Action header such as KEY BIOMECHANICAL CUES, RECOMMENDED SWAPS, or READINESS ACTION PLAN',
-              },
-              bulletCues: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.STRING,
-                },
-                description: '3 actionable, specific bullet points with exact joint angles, substitutions, or recovery rules',
-              },
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.8-flash',
+      contents: promptContent,
+      config: {
+        systemInstruction: COACH_SYSTEM_INSTRUCTION,
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            cardTitle: {
+              type: Type.STRING,
+              description: 'Card headline such as FORM GUIDANCE, RECOVERY & READINESS, EXERCISE ALTERNATIVES, or PROGRESSION PLAN',
             },
-            required: ['cardTitle', 'summary', 'cuesTitle', 'bulletCues'],
+            summary: {
+              type: Type.STRING,
+              description: '2 to 3 crisp, tailored sentences answering the exact question directly without generic fillers',
+            },
+            cuesTitle: {
+              type: Type.STRING,
+              description: 'Action header such as KEY BIOMECHANICAL CUES, RECOMMENDED SWAPS, or READINESS ACTION PLAN',
+            },
+            bulletCues: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.STRING,
+              },
+              description: '3 actionable, specific bullet points with exact joint angles, substitutions, or recovery rules',
+            },
           },
+          required: ['cardTitle', 'summary', 'cuesTitle', 'bulletCues'],
         },
-      });
+      },
+    });
 
-      const responseText = response.text;
-      if (responseText) {
-        return JSON.parse(responseText);
-      }
-    } catch (err) {
-      console.warn(`[server /api/coach] Model ${modelName} failed, attempting next:`, err.message);
-      lastError = err;
+    const responseText = response.text;
+    if (!responseText) {
+      throw new Error('Empty response received from Gemini API');
     }
-  }
 
-  const friendlyMsg = formatGeminiError(lastError);
-  throw new Error(friendlyMsg);
+    return JSON.parse(responseText);
+  } catch (err) {
+    const friendlyMsg = formatGeminiError(err);
+    throw new Error(friendlyMsg);
+  }
 }
 
 const mimeTypes = {
@@ -204,7 +193,7 @@ const server = http.createServer(async (req, res) => {
     res.end(JSON.stringify({
       status: 'ok',
       hasGeminiKey: hasKey,
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.8-flash',
     }));
     return;
   }

@@ -71,7 +71,7 @@ export class WorkoutAiService {
         return {
           connected: true,
           hasKey: Boolean(json.hasGeminiKey),
-          model: json.model || 'gemini-2.5-flash',
+          model: json.model || 'gemini-3.8-flash',
         };
       }
       return { connected: false, hasKey: false };
