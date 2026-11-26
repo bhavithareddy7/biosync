@@ -61,6 +61,63 @@ function formatGeminiError(err) {
   return raw;
 }
 
+function isRetryableError(err) {
+  if (!err) return false;
+  const str = (typeof err.message === 'string' ? err.message : String(err)).toLowerCase();
+  return (
+    str.includes('429') ||
+    str.includes('503') ||
+    str.includes('high demand') ||
+    str.includes('resource_exhausted') ||
+    str.includes('unavailable') ||
+    str.includes('spikes in demand')
+  );
+}
+
+function isHighDemandError(err) {
+  if (!err) return false;
+  const str = (typeof err.message === 'string' ? err.message : String(err)).toLowerCase();
+  return (
+    str.includes('503') ||
+    str.includes('high demand') ||
+    str.includes('spikes in demand') ||
+    str.includes('unavailable')
+  );
+}
+
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+async function generateContentWithRetry(ai, model, promptContent, config, maxAttempts = 3) {
+  let attempt = 0;
+  let lastError = null;
+
+  while (attempt < maxAttempts) {
+    attempt++;
+    try {
+      return await ai.models.generateContent({
+        model,
+        contents: promptContent,
+        config,
+      });
+    } catch (err) {
+      lastError = err;
+      const retryable = isRetryableError(err);
+      if (!retryable || attempt >= maxAttempts) {
+        throw err;
+      }
+      const baseDelay = Math.pow(2, attempt - 1) * 1000;
+      const jitter = Math.floor(Math.random() * 500);
+      const delay = baseDelay + jitter;
+      console.warn(
+        `[server /api/coach] ${model} transient error (attempt ${attempt}/${maxAttempts}). Retrying in ${delay}ms...`
+      );
+      await sleep(delay);
+    }
+  }
+
+  throw lastError;
+}
+
 async function handleGeminiCoach(query, userContext) {
   const apiKey = (process.env.GEMINI_API_KEY || '').trim();
   if (!apiKey || apiKey === 'your_gemini_api_key_here') {
@@ -75,51 +132,62 @@ USER CONTEXT ("My Twin" & "My Data"):
 ${JSON.stringify(userContext || {}, null, 2)}
 `;
 
-  try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: promptContent,
-      config: {
-        systemInstruction: COACH_SYSTEM_INSTRUCTION,
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            cardTitle: {
-              type: Type.STRING,
-              description: 'Card headline such as FORM GUIDANCE, RECOVERY & READINESS, EXERCISE ALTERNATIVES, or PROGRESSION PLAN',
-            },
-            summary: {
-              type: Type.STRING,
-              description: '2 to 3 crisp, tailored sentences answering the exact question directly without generic fillers',
-            },
-            cuesTitle: {
-              type: Type.STRING,
-              description: 'Action header such as KEY BIOMECHANICAL CUES, RECOMMENDED SWAPS, or READINESS ACTION PLAN',
-            },
-            bulletCues: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.STRING,
-              },
-              description: '3 actionable, specific bullet points with exact joint angles, substitutions, or recovery rules',
-            },
+  const promptConfig = {
+    systemInstruction: COACH_SYSTEM_INSTRUCTION,
+    responseMimeType: 'application/json',
+    responseSchema: {
+      type: Type.OBJECT,
+      properties: {
+        cardTitle: {
+          type: Type.STRING,
+          description: 'Card headline such as FORM GUIDANCE, RECOVERY & READINESS, EXERCISE ALTERNATIVES, or PROGRESSION PLAN',
+        },
+        summary: {
+          type: Type.STRING,
+          description: '2 to 3 crisp, tailored sentences answering the exact question directly without generic fillers',
+        },
+        cuesTitle: {
+          type: Type.STRING,
+          description: 'Action header such as KEY BIOMECHANICAL CUES, RECOMMENDED SWAPS, or READINESS ACTION PLAN',
+        },
+        bulletCues: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.STRING,
           },
-          required: ['cardTitle', 'summary', 'cuesTitle', 'bulletCues'],
+          description: '3 actionable, specific bullet points with exact joint angles, substitutions, or recovery rules',
         },
       },
-    });
+      required: ['cardTitle', 'summary', 'cuesTitle', 'bulletCues'],
+    },
+  };
 
-    const responseText = response.text;
-    if (!responseText) {
-      throw new Error('Empty response received from Gemini API');
+  let response;
+  try {
+    // Primary: gemini-3.8-flash with 3 retry attempts (exponential backoff + jitter)
+    response = await generateContentWithRetry(ai, 'gemini-3.8-flash', promptContent, promptConfig, 3);
+  } catch (primaryErr) {
+    if (isHighDemandError(primaryErr)) {
+      console.warn(
+        '[server /api/coach] gemini-3.8-flash failed with 503 high-demand error after 3 attempts. Automatically falling back to gemini-3.5-flash-lite...'
+      );
+      try {
+        // Fallback: gemini-3.5-flash-lite
+        response = await generateContentWithRetry(ai, 'gemini-3.5-flash-lite', promptContent, promptConfig, 3);
+      } catch (fallbackErr) {
+        throw new Error(formatGeminiError(fallbackErr));
+      }
+    } else {
+      throw new Error(formatGeminiError(primaryErr));
     }
-
-    return JSON.parse(responseText);
-  } catch (err) {
-    const friendlyMsg = formatGeminiError(err);
-    throw new Error(friendlyMsg);
   }
+
+  const responseText = response.text;
+  if (!responseText) {
+    throw new Error('Empty response received from Gemini API');
+  }
+
+  return JSON.parse(responseText);
 }
 
 const mimeTypes = {
@@ -193,7 +261,7 @@ const server = http.createServer(async (req, res) => {
     res.end(JSON.stringify({
       status: 'ok',
       hasGeminiKey: hasKey,
-      model: 'gemini-3.8-flash',
+      model: 'gemini-3.8-flash (fallback: gemini-3.5-flash-lite)',
     }));
     return;
   }

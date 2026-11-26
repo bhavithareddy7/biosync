@@ -88,7 +88,80 @@ export function formatGeminiError(err: any): string {
 }
 
 /**
- * Generate structured coaching feedback using gemini-3.8-flash exclusively
+ * Checks if an error is transient (429 Rate Limit / Quota Spike or 503 Service Unavailable / High Demand)
+ */
+export function isRetryableError(err: any): boolean {
+  if (!err) return false;
+  const str = (typeof err.message === 'string' ? err.message : String(err)).toLowerCase();
+  return (
+    str.includes('429') ||
+    str.includes('503') ||
+    str.includes('high demand') ||
+    str.includes('resource_exhausted') ||
+    str.includes('unavailable') ||
+    str.includes('spikes in demand')
+  );
+}
+
+/**
+ * Checks if error is specifically a 503 high demand / service unavailable error
+ */
+export function isHighDemandError(err: any): boolean {
+  if (!err) return false;
+  const str = (typeof err.message === 'string' ? err.message : String(err)).toLowerCase();
+  return (
+    str.includes('503') ||
+    str.includes('high demand') ||
+    str.includes('spikes in demand') ||
+    str.includes('unavailable')
+  );
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Executes generateContent with up to 3 attempts using exponential backoff + jitter on 429/503 errors
+ */
+async function generateContentWithRetry(
+  ai: GoogleGenAI,
+  model: string,
+  promptContent: string,
+  config: any,
+  maxAttempts = 3
+): Promise<any> {
+  let attempt = 0;
+  let lastError: any = null;
+
+  while (attempt < maxAttempts) {
+    attempt++;
+    try {
+      return await ai.models.generateContent({
+        model,
+        contents: promptContent,
+        config,
+      });
+    } catch (err: any) {
+      lastError = err;
+      const retryable = isRetryableError(err);
+      if (!retryable || attempt >= maxAttempts) {
+        throw err;
+      }
+      const baseDelay = Math.pow(2, attempt - 1) * 1000; // 1000ms, 2000ms
+      const jitter = Math.floor(Math.random() * 500); // 0-500ms
+      const delay = baseDelay + jitter;
+      console.warn(
+        `[geminiCoachBackend] ${model} transient error (attempt ${attempt}/${maxAttempts}). Retrying in ${delay}ms...`
+      );
+      await sleep(delay);
+    }
+  }
+
+  throw lastError;
+}
+
+/**
+ * Generate structured coaching feedback using gemini-3.8-flash as primary
+ * with 3 retry attempts (exponential backoff + jitter) and automatic fallback to gemini-3.5-flash-lite on 503 errors.
  */
 export async function generateCoachResponse(
   query: string,
@@ -111,50 +184,61 @@ USER CONTEXT ("My Twin" & "My Data"):
 ${JSON.stringify(userContext, null, 2)}
 `;
 
-  try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: promptContent,
-      config: {
-        systemInstruction: COACH_SYSTEM_INSTRUCTION,
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            cardTitle: {
-              type: Type.STRING,
-              description: 'Card headline such as FORM GUIDANCE, RECOVERY & READINESS, EXERCISE ALTERNATIVES, or PROGRESSION PLAN',
-            },
-            summary: {
-              type: Type.STRING,
-              description: '2 to 3 crisp, tailored sentences answering the exact question directly without generic fillers',
-            },
-            cuesTitle: {
-              type: Type.STRING,
-              description: 'Action header such as KEY BIOMECHANICAL CUES, RECOMMENDED SWAPS, or READINESS ACTION PLAN',
-            },
-            bulletCues: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.STRING,
-              },
-              description: '3 actionable, specific bullet points with exact joint angles, substitutions, or recovery rules',
-            },
+  const promptConfig = {
+    systemInstruction: COACH_SYSTEM_INSTRUCTION,
+    responseMimeType: 'application/json',
+    responseSchema: {
+      type: Type.OBJECT,
+      properties: {
+        cardTitle: {
+          type: Type.STRING,
+          description: 'Card headline such as FORM GUIDANCE, RECOVERY & READINESS, EXERCISE ALTERNATIVES, or PROGRESSION PLAN',
+        },
+        summary: {
+          type: Type.STRING,
+          description: '2 to 3 crisp, tailored sentences answering the exact question directly without generic fillers',
+        },
+        cuesTitle: {
+          type: Type.STRING,
+          description: 'Action header such as KEY BIOMECHANICAL CUES, RECOMMENDED SWAPS, or READINESS ACTION PLAN',
+        },
+        bulletCues: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.STRING,
           },
-          required: ['cardTitle', 'summary', 'cuesTitle', 'bulletCues'],
+          description: '3 actionable, specific bullet points with exact joint angles, substitutions, or recovery rules',
         },
       },
-    });
+      required: ['cardTitle', 'summary', 'cuesTitle', 'bulletCues'],
+    },
+  };
 
-    const responseText = response.text;
-    if (!responseText) {
-      throw new Error('Received empty response from Gemini API');
+  let response: any;
+  try {
+    // Primary Model: gemini-3.8-flash (3 retry attempts with exponential backoff + jitter on 429/503)
+    response = await generateContentWithRetry(ai, 'gemini-3.8-flash', promptContent, promptConfig, 3);
+  } catch (primaryErr: any) {
+    if (isHighDemandError(primaryErr)) {
+      console.warn(
+        '[geminiCoachBackend] gemini-3.8-flash failed with 503 high-demand error after 3 attempts. Automatically falling back to gemini-3.5-flash-lite...'
+      );
+      try {
+        // Automatic Fallback: gemini-3.5-flash-lite
+        response = await generateContentWithRetry(ai, 'gemini-3.5-flash-lite', promptContent, promptConfig, 3);
+      } catch (fallbackErr: any) {
+        throw new Error(formatGeminiError(fallbackErr));
+      }
+    } else {
+      throw new Error(formatGeminiError(primaryErr));
     }
-
-    const parsed: CoachResponseSchema = JSON.parse(responseText);
-    return parsed;
-  } catch (err: any) {
-    const friendlyMsg = formatGeminiError(err);
-    throw new Error(friendlyMsg);
   }
+
+  const responseText = response.text;
+  if (!responseText) {
+    throw new Error('Received empty response from Gemini API');
+  }
+
+  const parsed: CoachResponseSchema = JSON.parse(responseText);
+  return parsed;
 }
